@@ -4,6 +4,12 @@
 
 ## 当前进度
 
+### 网络层
+
+- **epoll 服务器** — 单线程事件循环（Reactor 模式）
+- **Connection** — 连接对象 + 读/写缓冲区 + 状态机
+- **非阻塞 TCP** — 与 Redis 相同的 `epoll_wait + O_NONBLOCK` 模型
+
 ### 核心引擎
 
 - **dict** — 哈希表核心：`dictnew` / `dictAdd` / `dictReplace` / `dictfind` / `dictDelete` / `dictfree`
@@ -13,7 +19,7 @@
 
 ### 基础工具
 
-- **SDS** — 动态字符串，含 MurmurHash2
+- **SDS** — 动态字符串（柔性数组 + 二进制安全），含 MurmurHash2
 - **log** — 日志模块，级别控制 + stdout/stderr，使用 `LOG_INFO(...)` 宏即可
 
 ## 测试
@@ -31,9 +37,23 @@ make test_dict && ./test_dict
 ## 使用
 
 ```bash
-# 构建并运行测试
+# 构建全部
+make all
+
+# 运行测试
 make test_dict
 
-# 运行服务（开发阶段）
-./flashkv > flash.log 2>&1
+# 启动服务器（默认 6379 端口）
+./flashkv
+
+# 指定端口 + 日志重定向
+./flashkv 6380 > flash.log 2>&1
+```
+
+## 架构
+
+```
+Client ──→ epoll 事件循环 ──→ RESP 解析 [TODO] ──→ dict 引擎
+                ↕
+        Connection 读/写缓冲区
 ```
