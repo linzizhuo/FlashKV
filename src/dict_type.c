@@ -3,7 +3,7 @@
 #include "sds.h"
 #include "val_obj.h"
 
-const struct dictType dictTypeSds = {
+struct dictType dictTypeSds = {
     .hash = sdsHash,
     .keyCompare = sdsCompare,
     .keyFree = sdsfree,
