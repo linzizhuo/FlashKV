@@ -37,7 +37,7 @@ static unsigned long dicthtGetIdx(const struct dictht *ht, uint64_t hashVal)
     return hashVal & ht->sizemask;
 }
 /* 只差入key，作为add和replace的底层，好抽象啊！！！ */
-dictEntry *dictAddRaw(struct dict *d, void *key, dictEntry **existing)
+static dictEntry *dictAddRaw(struct dict *d, void *key, dictEntry **existing)
 {
     if (existing)
         *existing = NULL; // 初始化一下
@@ -120,13 +120,13 @@ struct dict *dictnew(unsigned long n, struct dictType *type)
     p->ht.sizemask = size - 1;
     return p;
 }
-void dictEntryFree(struct dict *d, struct dictEntry *de)
+static void dictEntryFree(struct dict *d, struct dictEntry *de)
 {
     d->type->keyFree(de->key);
     d->type->valFree(de->val);
     free(de);
 }
-void dicthtfree(struct dict *d, struct dictht *dht)
+static void dicthtfree(struct dict *d, struct dictht *dht)
 {
     if(dht->table == NULL)
         return;
@@ -148,4 +148,29 @@ void dictfree(struct dict *d)
         return;
     dicthtfree(d, &d->ht);
     free(d);
+}
+
+int dictDelete(struct dict *d, const void *key)
+{
+    if(d == NULL || key == NULL)
+        return DICT_ERROR;
+    uint64_t hash = d->type->hash(key);
+    unsigned long idx = dicthtGetIdx(&d->ht, hash); // 获取编号
+
+    dictEntry *p = d->ht.table[idx];
+    dictEntry **prev = d->ht.table + idx; // 
+    while(p)
+    {
+        if(d->type->keyCompare(key, p->key) == 0) // 相等
+        {
+            *prev = p->next;
+            dictEntryFree(d, p);
+            d->ht.used--;
+            return DICT_OK;
+        }
+        prev = &p->next;
+        p = p->next;
+    }
+
+    return DICT_ERROR;
 }

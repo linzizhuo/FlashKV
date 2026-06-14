@@ -45,5 +45,5 @@ int dictAdd(struct dict *d, void *key, void *val);
 struct dict *dictnew(unsigned long n, struct dictType *type);
 void *dictfind(struct dict *d, const void *key);
 void dictfree(struct dict *d);
-
+int dictDelete(struct dict *d, const void *key);
 #endif

@@ -12,8 +12,8 @@ test_sds: tests/test_sds.c $(SDS_SRC)
 
 # ---------- Dict（C 实现） ----------
 
-DICT_SRC = src/dict.c
-DICT_DEPS = src/dict.h src/sds.h
+DICT_SRC = src/dict.c src/dict_type.c
+DICT_DEPS = src/dict.h src/dict_type.h src/sds.h src/val_obj.h
 
 test_dict: tests/test_dict.c $(DICT_SRC) $(SDS_SRC) $(DICT_DEPS)
 	$(CC) $(CFLAGS) -I src -o $@ $^

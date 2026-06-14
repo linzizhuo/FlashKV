@@ -31,7 +31,7 @@ int sdsCompare(const void *key1, const void *key2)
         return 1; // 不相等
     return memcmp(s1, s2, len1); // 0 表示相等，其他表示不等
 }
-void sdsfree(sds s)
+void sdsfree(void *s)
 {
     if (s == NULL) return;
     free(SDS_HDR(64, s));
@@ -70,16 +70,22 @@ uint64_t sdsHash(const void *key)
     {
     case 7:
         h ^= (uint64_t)p[6] << 48;
+        /* fall through */
     case 6:
         h ^= (uint64_t)p[5] << 40;
+        /* fall through */
     case 5:
         h ^= (uint64_t)p[4] << 32;
+        /* fall through */
     case 4:
         h ^= (uint64_t)p[3] << 24;
+        /* fall through */
     case 3:
         h ^= (uint64_t)p[2] << 16;
+        /* fall through */
     case 2:
         h ^= (uint64_t)p[1] << 8;
+        /* fall through */
     case 1:
         h ^= (uint64_t)p[0];
         h *= m;

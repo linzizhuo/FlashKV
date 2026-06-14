@@ -1,5 +1,8 @@
 # 编译产物
 flashkv
+test_dict
+test_dict_dbg
+test_sds
 *.o
 *.out
 

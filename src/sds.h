@@ -20,6 +20,6 @@ sds sdsnewlen(const void *init, size_t initlen);
 uint64_t sdsHash(const void *key);
 int sdsCompare(const void* key1, const void* key2);
 size_t sdslen(const sds str);
-void sdsfree(sds s);
+void sdsfree(void *s);
 
 #endif

@@ -1,6 +1,7 @@
 #ifndef _VAL_OBJ_H
 #define _VAL_OBJ_H
-#include"sds.h"
+#include "sds.h"
+#include <stdlib.h>
 enum ValType
 {
     VAL_STRING,
@@ -42,5 +43,4 @@ static inline void valObjFree(void *ptr)
     }
     free(o);
 }
-
 #endif
