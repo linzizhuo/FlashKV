@@ -18,13 +18,21 @@ DICT_DEPS = src/dict.h src/dict_type.h src/sds.h src/val_obj.h
 test_dict: tests/test_dict.c $(DICT_SRC) $(SDS_SRC) $(DICT_DEPS)
 	$(CC) $(CFLAGS) -I src -o $@ $^
 
+# ---------- 服务端 ----------
+
+SERVER_SRC = src/main.c src/server.c src/log.c
+SERVER_DEPS = src/server.h src/log.h
+
+flashkv: $(SERVER_SRC) $(SERVER_DEPS)
+	$(CC) $(CFLAGS) -I src -o $@ $(SERVER_SRC)
+
 # ---------- 全部 ----------
 
 .PHONY: all
-all: test_sds test_dict
+all: test_sds test_dict flashkv
 	@echo "======= 全部构建完成 ======="
 
 clean:
-	rm -f test_sds test_dict
+	rm -f test_sds test_dict flashkv
 
 .PHONY: clean
