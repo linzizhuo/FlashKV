@@ -32,8 +32,10 @@ static void test_add_and_find(void)
     assert(dictAdd(d, k1, v1) == DICT_OK);
     assert(d->ht.used == 1);
 
-    /* 重复 key 插入失败 */
-    assert(dictAdd(d, k1, makeStr("dup")) == DICT_ERROR);
+    /* 重复 key 插入失败，调用方自己清理 */
+    ValObj *dup = makeStr("dup");
+    assert(dictAdd(d, k1, dup) == DICT_ERROR);
+    valObjFree(dup);  /* dict 未接管，调用方释放 */
     assert(d->ht.used == 1);
 
     /* 查找 */
