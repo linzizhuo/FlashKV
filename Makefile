@@ -26,13 +26,20 @@ SERVER_DEPS = src/server.h src/log.h
 flashkv: $(SERVER_SRC) $(SERVER_DEPS)
 	$(CC) $(CFLAGS) -I src -o $@ $(SERVER_SRC)
 
+# ---------- RESP ----------
+
+RESP_SRC = src/resp.c
+
+test_resp: tests/test_resp.c $(RESP_SRC)
+	$(CC) $(CFLAGS) -I src -o $@ $^
+
 # ---------- 全部 ----------
 
 .PHONY: all
-all: test_sds test_dict flashkv
+all: test_resp test_sds test_dict flashkv
 	@echo "======= 全部构建完成 ======="
 
 clean:
-	rm -f test_sds test_dict flashkv
+	rm -f test_resp test_sds test_dict flashkv
 
 .PHONY: clean
