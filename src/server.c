@@ -67,18 +67,28 @@ static Connection *connNew(int fd) {
     if (!c) return NULL;
     c->fd       = fd;
     c->state    = CONN_STATE_READ;
+    c->rbuf     = NULL;
+    c->wbuf     = NULL;
 
     c->rbuf = malloc(BUF_SIZE);
+    if (!c->rbuf) goto fail;
     c->rcap = BUF_SIZE;
     c->rlen = 0;
 
     c->wbuf = malloc(BUF_SIZE);
+    if (!c->wbuf) goto fail;
     c->wcap = BUF_SIZE;
     c->wlen = 0;
 
     setNonBlock(fd);
     LOG_DEBUG("accept fd=%d", fd);
     return c;
+
+fail:
+    free(c->rbuf);
+    free(c->wbuf);
+    free(c);
+    return NULL;
 }
 
 static void connFree(Connection *c) {
@@ -94,7 +104,7 @@ static void connFree(Connection *c) {
 
 /* 读取客户端请求（由上层解析协议） */
 static void handleRead(Connection *c) {
-    ssize_t n = read(c->fd, c->rbuf, c->rcap);
+    ssize_t n = read(c->fd, c->rbuf, c->rcap - 1);  /* -1 留 '\0' 空间 */
     if (n > 0) {
         c->rlen = (size_t)n;
         c->rbuf[n] = '\0';  /* 方便调试看字符串 */

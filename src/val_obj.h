@@ -26,6 +26,7 @@ typedef struct
 
 static inline void valObjFree(void *ptr)
 {
+    if (!ptr) return;
     ValObj *o = (ValObj *)ptr;
     switch (o->type)
     {
