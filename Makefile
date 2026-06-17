@@ -20,8 +20,10 @@ test_dict: tests/test_dict.c $(DICT_SRC) $(SDS_SRC) $(DICT_DEPS)
 
 # ---------- 服务端 ----------
 
-SERVER_SRC = src/main.c src/server.c src/log.c
-SERVER_DEPS = src/server.h src/log.h
+SERVER_SRC = src/main.c src/server.c src/log.c src/service.c \
+             src/dict.c src/dict_type.c src/resp.c src/sds.c
+SERVER_DEPS = src/server.h src/log.h src/service.h \
+              src/dict.h src/dict_type.h src/resp.h src/sds.h src/val_obj.h
 
 flashkv: $(SERVER_SRC) $(SERVER_DEPS)
 	$(CC) $(CFLAGS) -I src -o $@ $(SERVER_SRC)
