@@ -68,18 +68,6 @@ void addReplyOK(Connection *c)
 }
 
 /* ================================================================
- *  内部辅助
- * ================================================================ */
-
-/* 大小写不敏感比较 RespObj 字符串 与 C 字符串 */
-static int respStrEqCase(RespObj *o, const char *s)
-{
-    size_t slen = strlen(s);
-    if (o->len != slen) return 0;
-    return strncasecmp((const char *)o->str, s, slen) == 0;
-}
-
-/* ================================================================
  *  命令实现
  * ================================================================ */
 
@@ -214,14 +202,29 @@ static void selectCommand(Connection *c, struct service *svc,
  *  命令表
  * ================================================================ */
 
+/* 按字典序排列，供 bsearch 二分查找 */
 static Command cmd_table[] = {
-    {"PING",    0,  pingCommand},
-    {"GET",     1,  getCommand},
-    {"SET",     2,  setCommand},
-    {"EXISTS",  1,  existsCommand},
     {"DEL",     1,  delCommand},
+    {"EXISTS",  1,  existsCommand},
+    {"GET",     1,  getCommand},
+    {"PING",    0,  pingCommand},
     {"SELECT",  1,  selectCommand},
+    {"SET",     2,  setCommand},
 };
+
+static int cmdCompare(const void *key, const void *elem) {
+    const RespObj *o   = (const RespObj *)key;
+    const Command *cmd = (const Command *)elem;
+    size_t slen   = strlen(cmd->name);
+    size_t minlen = o->len < slen ? o->len : slen;
+
+    int cmp = strncasecmp((const char *)o->str, cmd->name, minlen);
+    if (cmp != 0) return cmp;
+    /* minlen 相等 → 短者靠前 */
+    if (o->len < slen) return -1;
+    if (o->len > slen) return  1;
+    return 0;
+}
 
 /* ================================================================
  *  命令分发
@@ -234,22 +237,19 @@ int processCommand(Connection *c, struct service *svc,
     if (argv[0].type != RESP_STR) return SERVICE_ERR;
 
     size_t ncmd = sizeof(cmd_table) / sizeof(cmd_table[0]);
-    for (size_t i = 0; i < ncmd; i++) {
-        if (!respStrEqCase(&argv[0], cmd_table[i].name))
-            continue;
+    Command *cmd = bsearch(&argv[0], cmd_table, ncmd, sizeof(Command), cmdCompare);
 
-        /* 检查参数个数 */
-        int expected = cmd_table[i].arity;
-        if (expected >= 0 && argc - 1 != expected) {
-            addReplyError(c, "wrong number of arguments");
-            return SERVICE_OK;
-        }
-
-        cmd_table[i].handler(c, svc, argv, argc);
+    if (!cmd) {
+        addReplyError(c, "unknown command");
         return SERVICE_OK;
     }
 
-    addReplyError(c, "unknown command");
+    if (cmd->arity >= 0 && argc - 1 != cmd->arity) {
+        addReplyError(c, "wrong number of arguments");
+        return SERVICE_OK;
+    }
+
+    cmd->handler(c, svc, argv, argc);
     return SERVICE_OK;
 }
 
