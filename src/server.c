@@ -79,6 +79,7 @@ static Connection *connNew(int fd) {
     if (!c->wbuf) goto fail;
     c->wcap = BUF_SIZE;
     c->wlen = 0;
+    c->dbnum = 0;
 
     setNonBlock(fd);
     LOG_DEBUG("accept fd=%d", fd);

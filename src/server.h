@@ -26,6 +26,8 @@ typedef struct Connection {
     char *wbuf;
     size_t wlen;
     size_t wcap;
+
+    unsigned int dbnum;  /* 当前选中的数据库（per-connection） */
 } Connection;
 
 /* 服务器 */

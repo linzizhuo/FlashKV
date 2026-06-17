@@ -14,7 +14,6 @@ struct dictEntry
 static dictEntry *dictEntryNew(void *key, void *val, struct dictEntry *next)
 {
     dictEntry *entry = (dictEntry *)malloc(sizeof(struct dictEntry));
-    if (!entry) return NULL;
     entry->key = key;
     entry->val = val;
     entry->next = next;
@@ -60,11 +59,9 @@ static dictEntry *dictAddRaw(struct dict *d, void *key, dictEntry **existing)
         entry = entry->next;
     }
     // 头插
-    dictEntry *ne = dictEntryNew(key, NULL, d->ht.table[idx]);
-    if (!ne) return NULL;               /* OOM，保持原表不变 */
-    d->ht.table[idx] = ne;
+    d->ht.table[idx] = dictEntryNew(key, NULL, d->ht.table[idx]);
     d->ht.used++;
-    return ne;
+    return d->ht.table[idx];
 }
 int dictReplace(struct dict *d, void *key, void *val)
 {
