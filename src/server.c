@@ -1,5 +1,6 @@
 #include "server.h"
 #include "log.h"
+#include "resp.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -62,13 +63,15 @@ static int listenOnPort(int port) {
 
 /* ---------- 连接管理 ---------- */
 
-static Connection *connNew(int fd) {
+static Connection *connNew(int fd, struct service *svc) {
     Connection *c = malloc(sizeof(*c));
     if (!c) return NULL;
     c->fd       = fd;
     c->state    = CONN_STATE_READ;
     c->rbuf     = NULL;
     c->wbuf     = NULL;
+    c->svc      = svc;
+    c->dbnum    = 0;
 
     c->rbuf = malloc(BUF_SIZE);
     if (!c->rbuf) goto fail;
@@ -79,7 +82,6 @@ static Connection *connNew(int fd) {
     if (!c->wbuf) goto fail;
     c->wcap = BUF_SIZE;
     c->wlen = 0;
-    c->dbnum = 0;
 
     setNonBlock(fd);
     LOG_DEBUG("accept fd=%d", fd);
@@ -103,25 +105,67 @@ static void connFree(Connection *c) {
 
 /* ---------- 事件处理 ---------- */
 
-/* 读取客户端请求（由上层解析协议） */
+/* 读取 → 解析 RESP → 执行命令 → 写回响应
+ *
+ * 循环消费缓冲区中的完整命令（支持 pipeline）。
+ * 注意：当前 wbuf 只存最后一条响应，多条命令时仅最后一条被发回。
+ *       完整 pipeline 支持需要多响应缓冲（后续迭代）。
+ */
 static void handleRead(Connection *c) {
-    ssize_t n = read(c->fd, c->rbuf, c->rcap - 1);  /* -1 留 '\0' 空间 */
-    if (n > 0) {
-        c->rlen = (size_t)n;
-        c->rbuf[n] = '\0';  /* 方便调试看字符串 */
-        LOG_DEBUG("recv fd=%d: %.*s", c->fd, (int)n, c->rbuf);
-
-        /*
-         * TODO: 解析 RESP 协议 + 执行命令
-         *
-         *   - 调用 respParse(c->rbuf, c->rlen) → 参数
-         *   - 调用引擎接口 → 结果
-         *   - 写入 c->wbuf
-         *
-         * 临时 demo：原样 echo 回去
-         */
-        c->wlen = (size_t)snprintf(c->wbuf, c->wcap, "+OK\r\n");
+    /* 追加模式读：数据拼到 rbuf 尾部 */
+    size_t space = c->rcap - c->rlen - 1;   /* -1 留 '\0' */
+    if (space == 0) {
+        addReplyError(c, "request too large");
         c->state = CONN_STATE_WRITE;
+        c->rlen  = 0;
+        return;
+    }
+
+    ssize_t n = read(c->fd, c->rbuf + c->rlen, space);
+    if (n > 0) {
+        c->rlen += (size_t)n;
+        c->rbuf[c->rlen] = '\0';
+        LOG_DEBUG("recv fd=%d (%zd bytes)", c->fd, n);
+
+        /* 循环消费缓冲区中的所有完整命令 */
+        int has_response = 0;
+        while (c->rlen > 0) {
+            RespObj obj;
+            int ret = respParse(c->rbuf, c->rlen, &obj);
+
+            if (ret > 0) {
+                if (obj.type == RESP_ARRAY && obj.len > 0) {
+                    processCommand(c, c->svc, obj.elements, (int)obj.len);
+                } else {
+                    addReplyError(c, "expected array");
+                }
+                /* 消费已解析的数据 */
+                if ((size_t)ret < c->rlen)
+                    memmove(c->rbuf, c->rbuf + ret, c->rlen - ret);
+                c->rlen -= (size_t)ret;
+                respFreeObj(&obj);
+                c->state = CONN_STATE_WRITE;
+                has_response = 1;
+
+            } else if (ret == RESP_AGAIN) {
+                /* 数据不完整 — 仅在无成功命令时切回 READ，避免多余的 EPOLLOUT 唤醒 */
+                if (c->rlen >= c->rcap - 1) {
+                    addReplyError(c, "request too large");
+                    c->state = CONN_STATE_WRITE;
+                    c->rlen  = 0;
+                } else if (!has_response) {
+                    c->state = CONN_STATE_READ;
+                }
+                break;
+
+            } else {
+                addReplyError(c, "protocol error");
+                c->state = CONN_STATE_WRITE;
+                c->rlen  = 0;
+                break;
+            }
+        }
+
     } else if (n == 0) {
         /* 客户端关闭 */
         c->state = CONN_STATE_CLOSE;
@@ -134,14 +178,21 @@ static void handleRead(Connection *c) {
 }
 
 static void handleWrite(Connection *c) {
-    ssize_t n = write(c->fd, c->wbuf, c->wlen);
-    if (n > 0) {
-        /* 假设一次写完（简单场景，复杂场景要处理部分写入） */
-        c->state = CONN_STATE_READ;
-    } else if (n == -1 && errno != EAGAIN) {
-        LOG_WARN("write fd=%d: %s", c->fd, strerror(errno));
-        c->state = CONN_STATE_CLOSE;
+    while (c->wlen > 0) {
+        ssize_t n = write(c->fd, c->wbuf, c->wlen);
+        if (n > 0) {
+            c->wlen -= (size_t)n;
+            memmove(c->wbuf, c->wbuf + n, c->wlen);
+        } else if (n == -1 && errno == EAGAIN) {
+            /* TCP 缓冲区满，等下一轮 EPOLLOUT */
+            return;
+        } else {
+            LOG_WARN("write fd=%d: %s", c->fd, strerror(errno));
+            c->state = CONN_STATE_CLOSE;
+            return;
+        }
     }
+    c->state = CONN_STATE_READ;
 }
 
 static void handleAccept(struct Server *s, int epoll_fd) {
@@ -156,7 +207,7 @@ static void handleAccept(struct Server *s, int epoll_fd) {
         return;
     }
 
-    Connection *c = connNew(fd);
+    Connection *c = connNew(fd, &s->svc);
     if (!c) {
         close(fd);
         return;
@@ -199,6 +250,15 @@ struct Server *serverCreate(int port) {
 
     s->stop = 0;
 
+    /* 初始化服务层（16 个数据库） */
+    if (serviceInit(&s->svc, 16) != SERVICE_OK) {
+        LOG_ERROR("serviceInit failed");
+        close(s->epoll_fd);
+        close(s->listen_fd);
+        free(s);
+        return NULL;
+    }
+
     /* 将 listen_fd 加入 epoll */
     struct epoll_event ev = {
         .events = EPOLLIN,
@@ -206,6 +266,7 @@ struct Server *serverCreate(int port) {
     };
     if (epoll_ctl(s->epoll_fd, EPOLL_CTL_ADD, s->listen_fd, &ev) == -1) {
         LOG_ERROR("epoll_ctl add listen: %s", strerror(errno));
+        serviceFree(&s->svc);
         close(s->epoll_fd);
         close(s->listen_fd);
         free(s);
@@ -265,6 +326,7 @@ void serverDestroy(struct Server *s) {
     if (!s) return;
     close(s->listen_fd);
     close(s->epoll_fd);
+    serviceFree(&s->svc);
     free(s);
     LOG_INFO("server destroyed");
 }

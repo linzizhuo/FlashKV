@@ -2,6 +2,7 @@
 #define _SERVER_H
 
 #include <stddef.h>
+#include "service.h"
 
 #define SERVER_PORT 6379
 
@@ -27,14 +28,16 @@ typedef struct Connection {
     size_t wlen;
     size_t wcap;
 
-    unsigned int dbnum;  /* 当前选中的数据库（per-connection） */
+    unsigned int    dbnum;   /* 当前选中的数据库（per-connection） */
+    struct service *svc;     /* 服务层回指针 */
 } Connection;
 
 /* 服务器 */
 struct Server {
     int listen_fd;
     int epoll_fd;
-    int stop;          /* 退出标志 */
+    int stop;                /* 退出标志 */
+    struct service svc;      /* 服务层（嵌入式，随 server 生命周期） */
 };
 
 /* API */
