@@ -1,16 +1,22 @@
 # 编译产物
 flashkv
-test_dict
-test_dict_dbg
-test_sds
+test_*
 *.o
 *.out
+*.a
+*.so
+
+# 调试
+*.core
+*.dSYM/
+valgrind.log
 
 # 编辑器
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
 # Claude Code
 .claude/
@@ -18,4 +24,3 @@ test_sds
 # 系统
 .DS_Store
 Thumbs.db
-*.core
