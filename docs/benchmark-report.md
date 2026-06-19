@@ -127,6 +127,71 @@ dictRehashData  → 仅需 ~used  次操作完成 rehash（每次都有进度）
   ③ 避免了空桶上的无谓 dirty cache line 写回
 ```
 
+### 3.6 为什么 Redis 选择跳过空桶
+
+> 核心问题：`dictRehashStep(d, 1)` 和 `dictRehashData(d, 1)` 都能渐进搬迁，为什么 Redis 选后者？
+
+#### 理由 1：进度保证
+
+rehash 期间每次用户操作顺带搬 1 个桶。如果用 `dictRehashStep`：
+
+```
+100,000 次 SET 操作 → 顺带搬迁 100,000 次
+  实际有效搬迁：~53,000 桶（46.7% 浪费在空桶上）
+  rehash 仍未完成：还有 47,000 个数据桶没搬
+```
+
+用 `dictRehashData`：
+
+```
+100,000 次 SET 操作 → 顺带搬迁 100,000 次
+  实际有效搬迁：100,000 桶（0% 浪费）
+  rehash 必然在 used 次操作内完成
+```
+
+**操作量是确定的，进度是不确定的。** Redis 在意的是 rehash 尽快结束，不能容忍操作做了但搬迁没推进。
+
+#### 理由 2：双表窗口越短越好
+
+rehash 期间处于"双表"状态——每次 `dictFind` 要先后查 `ht[0]` 和 `ht[1]`（行 212-222）：
+
+```c
+for (int t = 0; t <= 1; t++) {
+    // 查 ht[t]
+    if (!dictIsRehashing(d)) break;
+}
+```
+
+多待一秒双表状态，多一秒的 double lookup 开销。所以要**尽快结束 rehash，越快越好**。Step 的浪费率直接拉长了双表窗口。
+
+#### 理由 3：空桶判空极便宜，稳赚
+
+微基准数据（见 §3.3）——判空 + continue 的成本：
+
+```
+Read only (Data 空桶路径):  0.35 ns/slot
+Read+dirty write (Step):   0.39 ns/slot
+```
+
+用 0.35ns 换一个"保证这次搬迁有意义"的承诺——白捡的保险。
+
+#### 理由 4：Redis 还加了一层防御
+
+Redis 源码里 `dictRehash` 实际实现中，如果连续跳过太多空桶（默认 10 个），也会停下来，防止在**极稀疏表**里永远找不到非空桶导致单次调用卡死。FlashKV 的 `dictRehashData` 目前没有这个保护：
+
+```c
+// src/dict.c:99 — while 循环没有"最多空桶"上限
+while (number > 0 && (unsigned long)d->rehashidx < d->ht[0].size) {
+    if (d->ht[0].table[d->rehashidx] == NULL) {
+        d->rehashidx++;
+        continue;  // ← 如果表极稀疏，可能走很久
+    }
+    ...
+}
+```
+
+建议后续加上 `empty_visited` 计数器，连续撞空 ≥ N 次就提前返回，防止单次 `dictRehashData` 耗时不可控。
+
 ---
 
 ## 4. 结论
