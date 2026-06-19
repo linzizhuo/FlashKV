@@ -93,8 +93,13 @@ static void getCommand(Connection *c, struct service *svc,
     struct dict *db = svc->db[c->dbnum];
     ValObj *obj = dictfind(db, key);
 
-    if (obj && obj->type == VAL_STRING) {
-        addReplyBulkSds(c, obj->val.str);
+    if (obj) {
+        if (obj->type == VAL_INT)
+            addReplyInteger(c, obj->val.ll);
+        else if (obj->type == VAL_STRING)
+            addReplyBulkSds(c, obj->val.str);
+        else
+            addReplyNull(c);
     } else {
         addReplyNull(c);
     }
@@ -105,27 +110,35 @@ static void setCommand(Connection *c, struct service *svc,
                        RespObj *argv, int argc)
 {
     (void)argc;
-    if (argv[1].type != RESP_STR || argv[2].type != RESP_STR) {
+    if (argv[1].type != RESP_STR ||
+        (argv[2].type != RESP_STR && argv[2].type != RESP_INT)) {
         addReplyError(c, "wrong type for key or value");
         return;
     }
 
     sds key = sdsnewlen(argv[1].str, argv[1].len);
-    sds val = sdsnewlen(argv[2].str, argv[2].len);
-    if (!key || !val) {
-        sdsfree(key); sdsfree(val);
+    if (!key) { addReplyError(c, "OOM"); return; }
+
+    ValObj *obj = malloc(sizeof(ValObj));
+    if (!obj) {
+        sdsfree(key);
         addReplyError(c, "OOM");
         return;
     }
 
-    ValObj *obj = malloc(sizeof(ValObj));
-    if (!obj) {
-        sdsfree(key); sdsfree(val);
-        addReplyError(c, "OOM");
-        return;
+    if (argv[2].type == RESP_INT) {
+        obj->type   = VAL_INT;
+        obj->val.ll = argv[2].integer;
+    } else {
+        sds val = sdsnewlen(argv[2].str, argv[2].len);
+        if (!val) {
+            sdsfree(key); free(obj);
+            addReplyError(c, "OOM");
+            return;
+        }
+        obj->type   = VAL_STRING;
+        obj->val.str = val;
     }
-    obj->type   = VAL_STRING;
-    obj->val.str = val;
 
     struct dict *db = svc->db[c->dbnum];
 
