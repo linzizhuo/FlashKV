@@ -47,4 +47,9 @@ struct dict *dictnew(unsigned long n, struct dictType *type);
 void *dictfind(struct dict *d, const void *key);
 void dictfree(struct dict *d);
 int dictDelete(struct dict *d, const void *key);
+
+/* ---- rehash 控制（供测试 / 调优使用）---- */
+int  dictRehash(struct dict *d);
+int  dictRehashStep(struct dict *d, unsigned long number);
+int  dictRehashData(struct dict *d, unsigned long number);
 #endif

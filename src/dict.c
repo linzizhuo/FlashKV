@@ -47,7 +47,7 @@ static void dicthtInit(struct dict* d, struct dictht* dht, unsigned long n)
 }
 // rehash函数...
 // 通过逻辑设计当触发rehash时表1一定是空的
-static int dictRehash(struct dict* d)
+int dictRehash(struct dict* d)
 {
     if (d->rehashidx >= 0)
         return DICT_ERROR; // 已经在 rehash
@@ -56,7 +56,19 @@ static int dictRehash(struct dict* d)
     d->rehashidx = 0;
     return DICT_OK;
 }
-static int dictRehashStep(struct dict* d, unsigned long number)
+
+/* ---- 收尾：ht[1] 顶替 ht[0] ---- */
+static void dictRehashComplete(struct dict *d)
+{
+    d->rehashidx = -1;
+    dicthtfree(d, d->ht);        /* 旧桶数组已无节点 */
+    d->ht[0] = d->ht[1];
+    d->ht[1].table = NULL;
+    d->ht[1].size = d->ht[1].sizemask = d->ht[1].used = 0;
+}
+
+/* 以桶槽为单位搬迁 —— 搬 number 个桶槽（含空桶），适合批量预加载 */
+int dictRehashStep(struct dict* d, unsigned long number)
 {
     unsigned long begin = d->rehashidx, end = MIN(d->ht[0].size, (unsigned long)d->rehashidx + number);
     for (unsigned long idx = begin; idx < end; idx++)
@@ -76,15 +88,43 @@ static int dictRehashStep(struct dict* d, unsigned long number)
         d->ht[0].table[idx] = NULL;
     }
     d->rehashidx = end;
-    if (d->ht[0].used == 0) {
-        d->rehashidx = -1;
-        dicthtfree(d, d->ht);  /* 旧桶数组已无节点，直接释放 */
-        d->ht[0] = d->ht[1];
-        d->ht[1].table = NULL;
-        d->ht[1].size = d->ht[1].sizemask = d->ht[1].used = 0;
-    }
+    if (d->ht[0].used == 0)
+        dictRehashComplete(d);
     return DICT_OK;
 }
+
+/* 搬 number 个非空桶 —— 跳过空桶，保证每次调用都有实际搬迁 */
+int dictRehashData(struct dict *d, unsigned long number)
+{
+    while (number > 0 && (unsigned long)d->rehashidx < d->ht[0].size) {
+        /* 跳过空桶，不消耗 number */
+        if (d->ht[0].table[d->rehashidx] == NULL) {
+            d->rehashidx++;
+            continue;
+        }
+
+        dictEntry *entry = d->ht[0].table[d->rehashidx];
+        while (entry) {
+            dictEntry *next = entry->next;
+            unsigned long idx = entry->hash & d->ht[1].sizemask;
+
+            entry->next = d->ht[1].table[idx];
+            d->ht[1].table[idx] = entry;
+            entry = next;
+            d->ht[0].used--;
+            d->ht[1].used++;
+        }
+        d->ht[0].table[d->rehashidx] = NULL;
+        d->rehashidx++;
+        number--;
+    }
+
+    if (d->ht[0].used == 0)
+        dictRehashComplete(d);
+
+    return DICT_OK;
+}
+
 static unsigned long dicthtGetIdx(const struct dictht *ht, uint64_t hashVal)
 {
     return hashVal & ht->sizemask;
@@ -99,7 +139,7 @@ static dictEntry *dictAddRaw(struct dict *d, void *key, dictEntry **existing)
 
     /* rehash 期间每操作顺带搬 1 个桶 */
     if (dictIsRehashing(d))
-        dictRehashStep(d, 1);
+        dictRehashData(d, 1);
 
     uint64_t hashVal = d->type->hash(key);
     int htidx = dictIsRehashing(d) ? 1 : 0;
@@ -166,7 +206,7 @@ void * dictfind(struct dict* d, const void *key)
     uint64_t hash = d->type->hash(key);
 
     if (dictIsRehashing(d))
-        dictRehashStep(d, 1);
+        dictRehashData(d, 1);
 
     /* 查两表（未 rehash 时 ht[1] 为空，第二圈立即退出） */
     for (int t = 0; t <= 1; t++) {
@@ -246,7 +286,7 @@ int dictDelete(struct dict *d, const void *key)
         return DICT_ERROR;
 
     if (dictIsRehashing(d))
-        dictRehashStep(d, 1);
+        dictRehashData(d, 1);
 
     uint64_t hash = d->type->hash(key);
 
