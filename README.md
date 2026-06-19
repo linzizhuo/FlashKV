@@ -50,6 +50,27 @@ make test_dict
 ./flashkv 6380 > flash.log 2>&1
 ```
 
+## 下一步
+
+### 功能侧
+
+- **MSET** — 批量写入命令，复用 `dictAddRaw` 热路径，减少网络往返与 rehash 顺带搬迁的均摊开销
+- **ZSet 跳表** — 有序集合底层，skiplist 实现 `ZADD` / `ZRANGE` / `ZRANK`，支持分值排序 + 字典序二级排序
+
+### 质量侧：Dict 2.0 性能优化
+
+当前吞吐基线：~1.7M SET/s（单线程，含渐进式 rehash）。优化目标 **4~6M SET/s**。
+
+| 优化方向 | 手段 | 预估收益 |
+|---------|------|---------|
+| 内存分配 | per-dict Slab 分配器替换 `malloc`/`free`，消除 entry 粒度的堆分配 | 2~3× |
+| 分支消除 | 拆分 rehash / 非 rehash 快速路径，`unlikely()` 标注冷分支 | +15~20% |
+| 缓存友好 | 搬迁时 `__builtin_prefetch` 预取下一个桶，规避 cache miss | +5~10% |
+
+三步聚拢起来：**砍 malloc → 拆路径 → 预取流水线**，纯代码级优化，不动数据结构，一天可完成。
+
+---
+
 ## 架构
 
 ```
