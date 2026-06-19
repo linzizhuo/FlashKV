@@ -54,7 +54,6 @@ make test_dict
 
 ### 功能侧
 
-- **MSET** — 批量写入命令，复用 `dictAddRaw` 热路径，减少网络往返与 rehash 顺带搬迁的均摊开销
 - **ZSet 跳表** — 有序集合底层，skiplist 实现 `ZADD` / `ZRANGE` / `ZRANK`，支持分值排序 + 字典序二级排序
 
 ### 质量侧：Dict 2.0 性能优化
