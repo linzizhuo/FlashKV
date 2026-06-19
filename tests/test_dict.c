@@ -22,6 +22,11 @@ static ValObj *makeInt(long long v) {
     return o;
 }
 
+/* 辅助：返回 dict 中所有条目的总数（跨 ht[0] + ht[1]） */
+static unsigned long dictTotalUsed(struct dict *d) {
+    return d->ht[0].used + d->ht[1].used;
+}
+
 static void test_add_and_find(void)
 {
     printf("=== test_add_and_find ===\n");
@@ -30,13 +35,13 @@ static void test_add_and_find(void)
     sds k1 = sdsnew("name");
     ValObj *v1 = makeStr("FlashKV");
     assert(dictAdd(d, k1, v1) == DICT_OK);
-    assert(d->ht.used == 1);
+    assert(d->ht[0].used == 1);
 
     /* 重复 key 插入失败，调用方自己清理 */
     ValObj *dup = makeStr("dup");
     assert(dictAdd(d, k1, dup) == DICT_ERROR);
     valObjFree(dup);  /* dict 未接管，调用方释放 */
-    assert(d->ht.used == 1);
+    assert(d->ht[0].used == 1);
 
     /* 查找 */
     ValObj *found = (ValObj *)dictfind(d, k1);
@@ -62,9 +67,11 @@ static void test_replace(void)
     ValObj *v1 = makeStr("old");
     dictAdd(d, k, v1);
 
-    /* replace 旧值 */
+    /* replace 旧值 — dictReplace 不负责释放旧 val，调用方需自行处理 */
     ValObj *v2 = makeStr("new");
+    ValObj *old = dictfind(d, k);
     dictReplace(d, k, v2);
+    if (old) valObjFree(old);   /* 调用方释放被替换的旧值 */
 
     ValObj *found = (ValObj *)dictfind(d, k);
     assert(found->type == VAL_STRING);
@@ -84,11 +91,11 @@ static void test_delete(void)
     dictAdd(d, k1, makeStr("hello"));
     dictAdd(d, k2, makeStr("bye"));
 
-    assert(d->ht.used == 2);
+    assert(d->ht[0].used == 2);
 
     /* 删除存在的 key */
     assert(dictDelete(d, k2) == DICT_OK);
-    assert(d->ht.used == 1);
+    assert(d->ht[0].used == 1);
     /* 注意：k2 已经在 dictDelete 里被 free 了，不能再用原指针查 */
     sds k2copy = sdsnew("gone");
     assert(dictfind(d, k2copy) == NULL);
@@ -115,7 +122,7 @@ static void test_delete_missing(void)
     /* 删不存在的 key */
     sds missing = sdsnew("nobody");
     assert(dictDelete(d, missing) == DICT_ERROR);
-    assert(d->ht.used == 1);
+    assert(d->ht[0].used == 1);
     sdsfree(missing);
 
     dictfree(d);
@@ -132,7 +139,7 @@ static void test_delete_no_key_free(void)
 
     /* dictDelete 会自己 keyFree + valFree，调用方不用再 free */
     assert(dictDelete(d, k) == DICT_OK);
-    assert(d->ht.used == 0);
+    assert(d->ht[0].used == 0);
 
     dictfree(d);
     /* 注意：k 已经在删除时被 free 了，不要再 sdsfree(k) */
@@ -153,7 +160,7 @@ static void test_multiple_keys(void)
         ValObj *v = makeInt(i * 10);
         assert(dictAdd(d, k, v) == DICT_OK);
     }
-    assert(d->ht.used == (unsigned long)N);
+    assert(dictTotalUsed(d) == (unsigned long)N);
 
     /* 全部能查到 */
     for (int i = 0; i < N; i++) {
@@ -164,7 +171,7 @@ static void test_multiple_keys(void)
         assert(v != NULL);
         assert(v->type == VAL_INT);
         assert(v->val.ll == i * 10);
-        sdsfree(k);   /* 查找用的 key，用完释放（dict 里有自己的副本） */
+        sdsfree(k);
     }
 
     /* 删一半 */
@@ -173,10 +180,9 @@ static void test_multiple_keys(void)
         snprintf(buf, sizeof(buf), "key-%d", i);
         sds k = sdsnew(buf);
         assert(dictDelete(d, k) == DICT_OK);
-        sdsfree(k);   /* 这个 key 是我们临时创建的，不是 dict 里的那个 */
-        /* 注意：这里 sdsfree(k) 和 dict 内部的 keyFree 是不同对象 */
+        sdsfree(k);
     }
-    assert(d->ht.used == (unsigned long)(N - N / 2));
+    assert(dictTotalUsed(d) == (unsigned long)(N - N / 2));
 
     /* 剩下的还在 */
     for (int i = N / 2; i < N; i++) {
@@ -237,6 +243,154 @@ static void test_null_safety(void)
     printf("   dictDelete 防御 ✅\n");
 }
 
+/* ================================================================
+ *   渐进式 rehash 专项测试
+ * ================================================================ */
+
+static void test_rehash_trigger(void)
+{
+    printf("=== test_rehash_trigger ===\n");
+    struct dict *d = dictnew(4, &dictTypeSds);  // size=16
+
+    /* 插入 16 条：未超阈值，不触发 */
+    for (int i = 0; i < 16; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "k%d", i);
+        dictAdd(d, sdsnew(buf), makeInt(i));
+    }
+    assert(d->rehashidx == -1);
+    assert(d->ht[1].table == NULL);
+    printf("   16 条: rehashidx=%ld (expect -1)  ✅\n", d->rehashidx);
+
+    /* 第 17 条：used(17) > size(16)，触发 rehash */
+    dictAdd(d, sdsnew("k16"), makeInt(16));
+    assert(d->rehashidx >= 0);
+    assert(d->ht[1].table != NULL);
+    assert(d->ht[1].size == 32);  /* 翻倍 */
+    printf("   17 条: rehash 触发, ht[1].size=%lu (expect 32)  ✅\n", d->ht[1].size);
+
+    dictfree(d);
+    printf("   ✅\n");
+}
+
+static void test_rehash_find_during(void)
+{
+    printf("=== test_rehash_find_during ===\n");
+    struct dict *d = dictnew(4, &dictTypeSds);
+
+    /* 插入 20 条（触发 rehash 但未完成） */
+    for (int i = 0; i < 20; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "k%d", i);
+        dictAdd(d, sdsnew(buf), makeInt(i * 10));
+    }
+    assert(d->rehashidx >= 0);  /* 还在 rehash 中 */
+    printf("   插入 20 条后: rehashidx=%ld, ht[0].used=%lu, ht[1].used=%lu\n",
+           d->rehashidx, d->ht[0].used, d->ht[1].used);
+
+    /* 所有 key 都能查到（可能分散在两个表中） */
+    for (int i = 0; i < 20; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "k%d", i);
+        sds k = sdsnew(buf);
+        ValObj *v = dictfind(d, k);
+        assert(v != NULL);
+        assert(v->type == VAL_INT);
+        assert(v->val.ll == (long long)i * 10);
+        sdsfree(k);
+    }
+    printf("   20 条全部可查 (跨双表)  ✅\n");
+
+    dictfree(d);
+    printf("   ✅\n");
+}
+
+static void test_rehash_delete_during(void)
+{
+    printf("=== test_rehash_delete_during ===\n");
+    struct dict *d = dictnew(4, &dictTypeSds);
+
+    for (int i = 0; i < 20; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "k%d", i);
+        dictAdd(d, sdsnew(buf), makeInt(i));
+    }
+    assert(d->rehashidx >= 0);
+    unsigned long before = dictTotalUsed(d);
+
+    /* 删一半 —— 可能落在 ht[0] 或 ht[1] */
+    for (int i = 0; i < 10; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "k%d", i);
+        sds k = sdsnew(buf);
+        assert(dictDelete(d, k) == DICT_OK);
+        sdsfree(k);
+    }
+    assert(dictTotalUsed(d) == before - 10);
+    printf("   删除 10 条后: total=%lu (expect %lu)  ✅\n",
+           dictTotalUsed(d), before - 10);
+
+    dictfree(d);
+    printf("   ✅\n");
+}
+
+static void test_rehash_replace_trigger(void)
+{
+    printf("=== test_rehash_replace_trigger ===\n");
+    struct dict *d = dictnew(4, &dictTypeSds);  // size=16
+
+    /* 只用 dictReplace 插入 20 条，验证其也能触发 rehash */
+    for (int i = 0; i < 20; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "rk%d", i);
+        sds k = sdsnew(buf);
+        dictReplace(d, k, makeInt(i));
+    }
+    /* 修复后：dictReplace 也应该触发 rehash */
+    assert(d->rehashidx >= 0 || d->ht[0].size > 16);
+    printf("   dictReplace 20 条: rehashidx=%ld ht[0].size=%lu (expect rehash triggered)  ✅\n",
+           d->rehashidx, d->ht[0].size);
+
+    dictfree(d);
+    printf("   ✅\n");
+}
+
+static void test_rehash_complete(void)
+{
+    printf("=== test_rehash_complete ===\n");
+    struct dict *d = dictnew(4, &dictTypeSds);  // size=16
+
+    /* 插入刚好 16 条 + 1 触发 rehash，然后持续 find 来推进 rehash */
+    for (int i = 0; i < 17; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "c%d", i);
+        dictAdd(d, sdsnew(buf), makeInt(i));
+    }
+    assert(d->rehashidx >= 0);
+    printf("   触发后 rehashidx=%ld\n", d->rehashidx);
+
+    /* 反复 find 推进 rehash（每次 dictfind 搬 1 个桶） */
+    int steps = 0;
+    while (d->rehashidx >= 0) {
+        sds k = sdsnew("c0");  /* 随便查一个存在的 key */
+        assert(dictfind(d, k) != NULL);
+        sdsfree(k);
+        steps++;
+        if (steps > 100) {
+            printf("   ERROR: rehash 未在 100 步内完成!\n");
+            assert(0);
+        }
+    }
+    printf("   %d 次 dictfind 后 rehash 完成\n", steps);
+    assert(d->ht[1].table == NULL);
+    assert(d->ht[0].size == 32);
+    assert(dictTotalUsed(d) == 17);
+    printf("   ht[0].size=%lu, total=%lu  ✅\n", d->ht[0].size, dictTotalUsed(d));
+
+    dictfree(d);
+    printf("   ✅\n");
+}
+
 int main(void)
 {
     printf("======== Dict 单元测试 ========\n\n");
@@ -249,6 +403,13 @@ int main(void)
     test_multiple_keys();
     test_valobj_types();
     test_null_safety();
+
+    printf("\n--- 渐进式 rehash ---\n\n");
+    test_rehash_trigger();
+    test_rehash_find_during();
+    test_rehash_delete_during();
+    test_rehash_replace_trigger();
+    test_rehash_complete();
 
     printf("\n======== 🎉 全部测试通过 ========\n");
     return 0;

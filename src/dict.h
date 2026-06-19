@@ -32,7 +32,8 @@ struct dictType{
 struct dict
 {
     struct dictType *type;
-    struct dictht ht;
+    struct dictht ht[2];
+    long rehashidx;
 };
 
 /*
