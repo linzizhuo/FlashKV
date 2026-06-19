@@ -47,7 +47,7 @@ static void dicthtInit(struct dict* d, struct dictht* dht, unsigned long n)
 }
 // rehash函数...
 // 通过逻辑设计当触发rehash时表1一定是空的
-int dictRehash(struct dict* d)
+static int dictRehash(struct dict* d)
 {
     if (d->rehashidx >= 0)
         return DICT_ERROR; // 已经在 rehash
@@ -56,7 +56,6 @@ int dictRehash(struct dict* d)
     d->rehashidx = 0;
     return DICT_OK;
 }
-
 /* ---- 收尾：ht[1] 顶替 ht[0] ---- */
 static void dictRehashComplete(struct dict *d)
 {
@@ -66,9 +65,8 @@ static void dictRehashComplete(struct dict *d)
     d->ht[1].table = NULL;
     d->ht[1].size = d->ht[1].sizemask = d->ht[1].used = 0;
 }
-
 /* 以桶槽为单位搬迁 —— 搬 number 个桶槽（含空桶），适合批量预加载 */
-int dictRehashStep(struct dict* d, unsigned long number)
+static int dictRehashStep(struct dict *d, unsigned long number)
 {
     unsigned long begin = d->rehashidx, end = MIN(d->ht[0].size, (unsigned long)d->rehashidx + number);
     for (unsigned long idx = begin; idx < end; idx++)
@@ -92,9 +90,8 @@ int dictRehashStep(struct dict* d, unsigned long number)
         dictRehashComplete(d);
     return DICT_OK;
 }
-
 /* 搬 number 个非空桶 —— 跳过空桶，保证每次调用都有实际搬迁 */
-int dictRehashData(struct dict *d, unsigned long number)
+static int dictRehashData(struct dict *d, unsigned long number)
 {
     while (number > 0 && (unsigned long)d->rehashidx < d->ht[0].size) {
         /* 跳过空桶，不消耗 number */
@@ -124,7 +121,6 @@ int dictRehashData(struct dict *d, unsigned long number)
 
     return DICT_OK;
 }
-
 static unsigned long dicthtGetIdx(const struct dictht *ht, uint64_t hashVal)
 {
     return hashVal & ht->sizemask;
