@@ -14,6 +14,7 @@
 struct service
 {
     struct dict **db;
+    struct dict **expires;   /* TTL 独立字典，key→绝对秒时间戳（inline 存储） */
     unsigned int dbsize;
 };
 
