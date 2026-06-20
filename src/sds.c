@@ -22,6 +22,11 @@ sds sdsnewlen(const void *init, size_t initlen)
     p->buf[initlen] = '\0';
     return p->buf;
 }
+sds sdsdup(const sds s)
+{
+    return sdsnewlen(s, sdslen(s));
+}
+
 int sdsCompare(const void *key1, const void *key2)
 {
     sds s1 = (sds)key1, s2 = (sds)key2;

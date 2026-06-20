@@ -16,6 +16,7 @@ struct __attribute__((__packed__)) sdshdr64
 
 sds sdsnew(const char *init);
 sds sdsnewlen(const void *init, size_t initlen);
+sds sdsdup(const sds s);
 /* 为字符串做hash的函数 */
 uint64_t sdsHash(const void *key);
 int sdsCompare(const void* key1, const void* key2);
