@@ -2,6 +2,7 @@
 #define _VAL_OBJ_H
 #include "sds.h"
 #include <stdlib.h>
+#include <stdint.h>
 enum ValType
 {
     VAL_STRING,

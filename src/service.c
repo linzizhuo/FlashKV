@@ -91,7 +91,7 @@ static void getCommand(Connection *c, struct service *svc,
     if (!key) { addReplyError(c, "OOM"); return; }
 
     struct dict *db = svc->db[c->dbnum];
-    ValObj *obj = dictfind(db, key);
+    ValObj *obj = dictfind(db, key, NULL);
 
     if (obj) {
         if (obj->type == VAL_INT)
@@ -143,8 +143,8 @@ static void setCommand(Connection *c, struct service *svc,
     struct dict *db = svc->db[c->dbnum];
 
     /* 若 key 已存在，先记录旧值；dictReplace 覆写后释放旧值和新 key */
-    ValObj *old = dictfind(db, key);
-    dictReplace(db, key, obj);
+    ValObj *old = dictfind(db, key, NULL);
+    dictReplace(db, key, obj, NULL);
     if (old) {
         valObjFree(old);   /* 释放被覆盖的旧 ValObj */
         sdsfree(key);      /* dict 保留了旧 key，新 key 未被插入，需释放 */
@@ -166,7 +166,7 @@ static void existsCommand(Connection *c, struct service *svc,
     if (!key) { addReplyError(c, "OOM"); return; }
 
     struct dict *db = svc->db[c->dbnum];
-    addReplyInteger(c, dictfind(db, key) ? 1 : 0);
+    addReplyInteger(c, dictfind(db, key, NULL) ? 1 : 0);
     sdsfree(key);
 }
 
@@ -182,7 +182,7 @@ static void delCommand(Connection *c, struct service *svc,
     if (!key) { addReplyError(c, "OOM"); return; }
 
     struct dict *db = svc->db[c->dbnum];
-    int ret = dictDelete(db, key);
+    int ret = dictDelete(db, key, NULL);
     addReplyInteger(c, ret == DICT_OK ? 1 : 0);
     sdsfree(key);
 }

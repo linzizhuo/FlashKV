@@ -7,14 +7,15 @@
 
 static void dicthtfree(struct dict *d, struct dictht *dht);
 
+
 struct dictEntry
 {
-    uint64_t hash; // 缓存 hash，rehash 直接 & sizemask
+    hash_t hash; // 缓存 hash，rehash 直接 & sizemask
     void *key;
     void *val;
     struct dictEntry *next;
 };
-static dictEntry *dictEntryNew(uint64_t hash, void *key, void *val, struct dictEntry *next)
+static dictEntry *dictEntryNew(hash_t hash, void *key, void *val, struct dictEntry *next)
 {
     dictEntry *entry = (dictEntry *)malloc(sizeof(struct dictEntry));
     entry->hash = hash;
@@ -33,6 +34,10 @@ static dictEntry *dictEntryNew(uint64_t hash, void *key, void *val, struct dictE
 // static int dictKeyCmp(const struct dict *d, const void *key1, const void *key2)
 // {
 // }
+// dict.c - 实现（知道 entry 布局）
+void *dictValGetPtr(struct dictEntry *entry) { return entry->val; }
+void *dictValGetRef(struct dictEntry *entry) { return &entry->val; }
+
 static void dicthtInit(struct dict* d, struct dictht* dht, unsigned long n)
 {
     if(dht->table)
@@ -121,7 +126,7 @@ static int dictRehashData(struct dict *d, unsigned long number)
 
     return DICT_OK;
 }
-static unsigned long dicthtGetIdx(const struct dictht *ht, uint64_t hashVal)
+static unsigned long dicthtGetIdx(const struct dictht *ht, hash_t hashVal)
 {
     return hashVal & ht->sizemask;
 }
@@ -129,7 +134,7 @@ static inline int dictIsRehashing(struct dict *d) {
     return d->rehashidx >= 0;
 }
 /* 只插入key，作为 add 和 replace 的底层 */
-static dictEntry *dictAddRaw(struct dict *d, void *key, dictEntry **existing)
+static dictEntry *dictAddRaw(struct dict *d, void *key, dictEntry **existing, void *hash)
 {
     if (existing) *existing = NULL;
 
@@ -137,7 +142,8 @@ static dictEntry *dictAddRaw(struct dict *d, void *key, dictEntry **existing)
     if (dictIsRehashing(d))
         dictRehashData(d, 1);
 
-    uint64_t hashVal = d->type->hash(key);
+    hash_t hashVal = (hash != NULL ? *((hash_t *)hash) : d->type->hash(key));
+
     int htidx = dictIsRehashing(d) ? 1 : 0;
 
     /* rehash 期间还要查 ht[0] 去重 */
@@ -174,10 +180,11 @@ static dictEntry *dictAddRaw(struct dict *d, void *key, dictEntry **existing)
 
     return ht->table[idx];
 }
-int dictReplace(struct dict *d, void *key, void *val)
+
+int dictReplace(struct dict *d, void *key, void *val, void *hash)
 {
     dictEntry *entry = NULL;
-    dictEntry *p = dictAddRaw(d, key, &entry);
+    dictEntry *p = dictAddRaw(d, key, &entry, hash);
 
     if (p == NULL)
         entry->val = val;   /* key 已存在，覆写值（旧值由调用方释放） */
@@ -185,9 +192,9 @@ int dictReplace(struct dict *d, void *key, void *val)
         p->val = val;       /* key 新插入，设置值 */
     return DICT_OK;
 }
-int dictAdd(struct dict *d, void *key, void *val)
+int dictAdd(struct dict *d, void *key, void *val, void* hash)
 {
-    dictEntry *p = dictAddRaw(d, key, NULL);
+    dictEntry *p = dictAddRaw(d, key, NULL, hash);
 
     if (p == NULL) // 插入失败，已经存在了
         return DICT_ERROR;
@@ -197,25 +204,27 @@ int dictAdd(struct dict *d, void *key, void *val)
         return DICT_OK;
     }
 }
-void * dictfind(struct dict* d, const void *key)
+void * dictfind(struct dict* d, const void *key, void* hash)
 {
-    uint64_t hash = d->type->hash(key);
-
+    hash_t hashVal = (hash != NULL ? *((hash_t*)hash) : d->type->hash(key));
     if (dictIsRehashing(d))
         dictRehashData(d, 1);
 
     /* 查两表（未 rehash 时 ht[1] 为空，第二圈立即退出） */
-    for (int t = 0; t <= 1; t++) {
-        unsigned long idx = dicthtGetIdx(&d->ht[t], hash);
-        dictEntry* p = d->ht[t].table[idx];
+    for (int t = 0; t <= 1; t++)
+    {
+        unsigned long idx = dicthtGetIdx(&d->ht[t], hashVal);
+        dictEntry *p = d->ht[t].table[idx];
 
-        while (p != NULL) {
+        while (p != NULL)
+        {
             if (d->type->keyCompare(key, p->key) == 0)
-                return p->val;
+                return d->type->valGet(p);
             p = p->next;
         }
 
-        if (!dictIsRehashing(d)) break;  /* 不 rehash 只查 ht[0] */
+        if (!dictIsRehashing(d))
+            break; /* 不 rehash 只查 ht[0] */
     }
     return NULL;
 }
@@ -249,7 +258,8 @@ struct dict *dictnew(unsigned long n, struct dictType *type)
 static void dictEntryFree(struct dict *d, struct dictEntry *de)
 {
     d->type->keyFree(de->key);
-    d->type->valFree(de->val);
+    if(d->type->valFree) // 适配void*直接存储数据
+        d->type->valFree(de->val);
     free(de);
 }
 static void dicthtfree(struct dict *d, struct dictht *dht)
@@ -276,7 +286,7 @@ void dictfree(struct dict *d)
         dicthtfree(d, &d->ht[1]);
     free(d);
 }
-int dictDelete(struct dict *d, const void *key)
+int dictDelete(struct dict *d, const void *key, void *hash)
 {
     if (d == NULL || key == NULL)
         return DICT_ERROR;
@@ -284,10 +294,10 @@ int dictDelete(struct dict *d, const void *key)
     if (dictIsRehashing(d))
         dictRehashData(d, 1);
 
-    uint64_t hash = d->type->hash(key);
+    hash_t hashVal = (hash != NULL ? *((hash_t *)hash) : d->type->hash(key));
 
     for (int t = 0; t <= 1; t++) {
-        unsigned long idx = dicthtGetIdx(&d->ht[t], hash);
+        unsigned long idx = dicthtGetIdx(&d->ht[t], hashVal);
         dictEntry *p = d->ht[t].table[idx];
         dictEntry **prev = &d->ht[t].table[idx];
 
