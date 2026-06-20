@@ -1,26 +1,10 @@
-# 编译产物
+skills-lock.json
+.agents/
 flashkv
-test_*
-*.o
-*.out
-*.a
-*.so
-
-# 调试
-*.core
-*.dSYM/
-valgrind.log
-
-# 编辑器
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# Claude Code
+test_dict
+test_resp
+test_sds
+bench_dict
+test_dict_dbg
 .claude/
-
-# 系统
-.DS_Store
-Thumbs.db
+*.o
