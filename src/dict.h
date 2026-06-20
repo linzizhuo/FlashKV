@@ -9,6 +9,7 @@
     "信任程序员，不给不需要的东西付代价"
 */
 typedef struct dictEntry dictEntry; /* 节点，不暴露 */
+typedef uint64_t hash_t;
 /* 哈希表，采用桶存储的方式。 */
 struct dictht
 {
@@ -19,10 +20,11 @@ struct dictht
 };
 /* 函数指针数组 */
 struct dictType{
-    uint64_t (*hash)(const void *key);
+    hash_t (*hash)(const void *key);
     int (*keyCompare)(const void *key1, const void *key2);
     void (*keyFree)(void *key);
     void (*valFree)(void *val);
+    void *(*valGet)(struct dictEntry *entry); // 取值策略
 };
 
 /*
@@ -39,15 +41,16 @@ struct dict
 /*
     函数设计目标：核心就是dict模块，不会引入一些其他的模块强加依赖，做到松耦合。
 */
-
-int dictReplace(struct dict *d, void *key, void *val);
-int dictAdd(struct dict *d, void *key, void *val);
+int dictReplace(struct dict *d, void *key, void *val, void *hash);
+int dictAdd(struct dict *d, void *key, void *val, void * hash);
 // dict.size = 2^len;
 struct dict *dictnew(unsigned long n, struct dictType *type);
-void *dictfind(struct dict *d, const void *key);
+void *dictfind(struct dict *d, const void *key, void* hash);
 void dictfree(struct dict *d);
-int dictDelete(struct dict *d, const void *key);
+int dictDelete(struct dict *d, const void *key, void* hash);
 
+void *dictValGetPtr(struct dictEntry *entry); // entry->val
+void *dictValGetRef(struct dictEntry *entry); // &entry->val
 /* ---- rehash 控制（供测试 / 调优使用）---- */
 // int  dictRehash(struct dict *d);
 // int  dictRehashStep(struct dict *d, unsigned long number);

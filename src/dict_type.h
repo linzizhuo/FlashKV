@@ -3,7 +3,6 @@
 #include "dict.h"
 /* dict的外层包装，只要负责维护函数指针列表和dict的创建 */
 extern struct dictType dictTypeSds;
-
-
+extern struct dictType dictTTL; 
 
 #endif
