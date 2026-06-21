@@ -1,27 +1,31 @@
-# 服务层接口设计文档
+# 服务层设计文档
+
+> 最后更新: 2026-06-21
 
 ## 1. 架构位置
 
 ```
-Client ──→ epoll ──→ handleRead ──→ respParse (协议解析)
-                                          │
-                                          ▼
-                                   processCommand (服务层)
-                                          │
-                                    ┌─────┴─────┐
-                                    ▼           ▼
-                              命令表查找    addReply* 写响应
-                                    │           │
-                                    ▼           ▼
-                              dict 引擎    c->wbuf ──→ Client
+Client ──→ epoll ──→ handleRead ──→ respParse (零拷贝协议解析)
+                                         │
+                                    ┌────┴────┐
+                                    ▼         ▼
+                            processCommand   addReply*
+                                    │         │
+                              bsearch 命令表  │
+                                    │         │
+                                    ▼         ▼
+                              kvdb 引擎    c->wbuf (追加模式)
+                                    │         │
+                                    ▼         ▼
+                              dict + expires  ──→ handleWrite → Client
 ```
 
-服务层是 **RESP 协议解析** 和 **dict 引擎** 之间的胶水层，负责：
+服务层是 RESP 协议解析和 kvdb 存储引擎之间的胶水层，负责：
 
-- 命令路由（命令名 → handler）
-- 参数校验（arity）
-- 业务逻辑（GET/SET/DEL/...）
-- 结果序列化（RESP 格式写回）
+- **命令路由** — `bsearch` 二分查找命令表（O(log n)）
+- **参数校验** — arity 检查，类型校验
+- **业务逻辑** — GET/SET/DEL/EXPIRE/TTL/...
+- **响应序列化** — `addReply*` 追加写入 `c->wbuf`，支持 pipeline 批量写回
 
 ---
 
@@ -30,10 +34,10 @@ Client ──→ epoll ──→ handleRead ──→ respParse (协议解析)
 | 宏 | 值 | 含义 | 触发场景 |
 |---|---|---|---|
 | `SERVICE_OK` | 0 | 处理完成 | 命令执行成功 / 业务错误已写回客户端 |
-| `SERVICE_ERR` | -1 | 内部错误 | argv 为空 / 命令名不是字符串 |
+| `SERVICE_ERR` | -1 | 协议违规 | argv 为空 / 命令名不是 RESP_STR |
 | `SERVICE_AGAIN` | -2 | 数据不完整 | **预留**，由上层 `respParse` 返回 |
 
-关键区分：**业务错误**（如"unknown command"、"index out of range"）走 `addReplyError` 写回客户端，`processCommand` 返回 `SERVICE_OK`。只有**协议层面的违规**（空数组、非字符串命令名）才返回 `SERVICE_ERR`。
+**关键区分**：业务错误（"unknown command"、"wrong type for key"）走 `addReplyError` 写回客户端，返回 `SERVICE_OK`。只有协议层面的违规（空数组、非字符串命令名）才返回 `SERVICE_ERR`。
 
 ---
 
@@ -43,15 +47,26 @@ Client ──→ epoll ──→ handleRead ──→ respParse (协议解析)
 
 ```c
 struct service {
-    struct dict **db;           // 数据库数组，db[0..dbsize-1]
-    unsigned int  dbnum;        // 当前选中库（默认 0）
-    unsigned int  dbsize;       // 数据库总数
+    kvdb        **kvs;       // 数据库数组，kvs[0..dbsize-1]
+    unsigned int  dbsize;    // 数据库总数（启动时固定）
 };
 ```
 
-每个 `db[i]` 是 `dictnew(4, &dictTypeSds)` 创建的哈希表：
-- key: SDS 字符串
-- val: `ValObj *`，通过 `valObjFree` 释放
+每个 `kvs[i]` 是一个 `kvdb` 实例——封装了主 dict + expires dict + 惰性删除 + key 所有权管理。7 个公开方法：`kvdbNew/Free/Get/Set/Del/Exists/Expire/TTL/Persist/ActiveExpireCycle`。
+
+**`dbnum`（当前选中库）存储在 Connection 上**，不在 service 上。每个连接独立选择数据库。
+
+```c
+// server.h
+typedef struct Connection {
+    int fd;
+    enum ConnState state;
+    char *rbuf;  size_t rlen, rcap;   // 读缓冲区
+    char *wbuf;  size_t wlen, wcap;   // 写缓冲区（追加模式）
+    unsigned int    dbnum;            // 当前选中的数据库 (per-connection)
+    struct service *svc;              // 服务层回指针
+} Connection;
+```
 
 ### 3.2 `CmdHandler` — 命令处理函数签名
 
@@ -62,8 +77,8 @@ typedef void (*CmdHandler)(struct Connection *c, struct service *svc,
 
 | 参数 | 说明 |
 |---|---|
-| `c` | 连接对象，handler 通过 `addReply*` 写入 `c->wbuf` |
-| `svc` | 服务层状态，`svc->db[svc->dbnum]` 获取当前库 |
+| `c` | 连接对象，handler 通过 `addReply*` 追加写入 `c->wbuf` |
+| `svc` | 服务层状态，`svc->kvs[c->dbnum]` 获取当前连接选中的库 |
 | `argv` | RESP 数组元素，`argv[0]` 是命令名，`argv[1..]` 是参数 |
 | `argc` | `argv` 数组长度 |
 
@@ -71,11 +86,33 @@ typedef void (*CmdHandler)(struct Connection *c, struct service *svc,
 
 ```c
 typedef struct {
-    const char *name;      // 命令名（大写）
-    int         arity;     // 参数个数（不含命令名），-1 变长
+    const char *name;      // 命令名（大写，如 "GET"）
+    int         arity;     // 参数个数（不含命令名），0 = 无参数
     CmdHandler  handler;
 } Command;
 ```
+
+命令表按**字典序排列**：
+
+```c
+static Command cmd_table[] = {
+    {"DEL",       1,  delCommand},       // D...
+    {"EXISTS",    1,  existsCommand},    // E...
+    {"EXPIRE",    2,  expireCommand},
+    {"EXPIREAT",  2,  expireatCommand},
+    {"GET",       1,  getCommand},       // G...
+    {"PERSIST",   1,  persistCommand},   // P...
+    {"PEXPIRE",   2,  pexpireCommand},
+    {"PEXPIREAT", 2,  pexpireatCommand},
+    {"PING",      0,  pingCommand},
+    {"PTTL",      1,  pttlCommand},
+    {"SELECT",    1,  selectCommand},    // S...
+    {"SET",       2,  setCommand},
+    {"TTL",       1,  ttlCommand},
+};
+```
+
+**按字典序是为了 `bsearch` 二分查找**，O(log n) 而非 O(n) 线性扫描。`cmdCompare` 使用 `strncasecmp` 实现大小写不敏感匹配。
 
 ---
 
@@ -87,9 +124,10 @@ typedef struct {
 int serviceInit(struct service *svc, unsigned int dbsize);
 ```
 
-- 行为：分配 `dbsize` 个 dict，每个初始 16 桶
-- 成功返回 `SERVICE_OK`，任一 dict 创建失败则回滚已分配的，返回 `SERVICE_ERR`
-- `svc->dbnum` 初始化为 0
+- 分配 `dbsize` 个 `kvdb` 实例
+- 成功返回 `SERVICE_OK`
+- 任一 `kvdbNew` 失败则回滚已分配的，返回 `SERVICE_ERR`
+- 调用方负责传入已分配好的 `struct service`（通常嵌入在 `struct Server` 中）
 
 ### 4.2 `serviceFree`
 
@@ -97,54 +135,63 @@ int serviceInit(struct service *svc, unsigned int dbsize);
 void serviceFree(struct service *svc);
 ```
 
-- 行为：释放所有 dict 和 db 数组，置 `svc->db = NULL`
-- 可安全传入 NULL
+- 释放所有 `kvdb` 实例和 `kvs` 数组
+- 置 `svc->kvs = NULL`
+- 可安全传入 NULL 或已释放的 service
 
 ---
 
-## 5. RESP 响应写入 API
+## 5. RESP 响应写入（追加模式，支持 Pipeline）
 
-所有函数将 RESP 协议字符串直接写入 `c->wbuf`，设置 `c->wlen`。
-**调用方负责将 `c->state` 置为 `CONN_STATE_WRITE`**（由上层 `handleRead` 统一设置）。
+所有 `addReply*` 函数将 RESP 协议数据**追加**到 `c->wbuf` 末尾，空间不足时自动 **2× 扩容**。
+
+**Pipeline 工作流**：
+
+```
+handleRead 循环:
+  1. respParse → 解析一条完整命令
+  2. processCommand → 命令处理 → addReply* 追加到 c->wbuf
+  3. 如果 rbuf 还有数据 → goto 1 (下一条命令)
+循环结束:
+  4. c->state = CONN_STATE_WRITE
+  5. 下次 epoll_wait 返回写就绪 → handleWrite 一次性写回客户端
+```
+
+这意味着：单次 `handleRead` 可以处理多条 pipeline 命令，响应逐条追加到 `wbuf`，最后一次性 `writev`/`write` 写回，减少系统调用。
 
 ### 5.1 `addReplyOK`
 
 ```c
 void addReplyOK(Connection *c);
-// 输出: +OK\r\n  (5 bytes)
+// → +OK\r\n  (5 bytes)
 ```
 
 ### 5.2 `addReplySimpleString`
 
 ```c
 void addReplySimpleString(Connection *c, const char *str);
-// 输出: +{str}\r\n
-// 示例: addReplySimpleString(c, "PONG") → +PONG\r\n
+// → +{str}\r\n
 ```
 
 ### 5.3 `addReplyError`
 
 ```c
 void addReplyError(Connection *c, const char *msg);
-// 输出: -ERR {msg}\r\n
-// 示例: addReplyError(c, "unknown command") → -ERR unknown command\r\n
+// → -ERR {msg}\r\n   (自动添加 "-ERR " 前缀)
 ```
 
 ### 5.4 `addReplyInteger`
 
 ```c
 void addReplyInteger(Connection *c, long long val);
-// 输出: :{val}\r\n
-// 示例: addReplyInteger(c, 42) → :42\r\n
+// → :{val}\r\n
 ```
 
 ### 5.5 `addReplyBulkString`
 
 ```c
 void addReplyBulkString(Connection *c, const char *str, size_t len);
-// 输出: ${len}\r\n{str}\r\n  (二进制安全)
-// 示例: addReplyBulkString(c, "hello", 5) → $5\r\nhello\r\n
-// 注意: 若 wbuf 剩余空间不足，静默返回（不写入）
+// → ${len}\r\n{str}\r\n  (二进制安全)
 ```
 
 ### 5.6 `addReplyBulkSds`
@@ -158,7 +205,26 @@ void addReplyBulkSds(Connection *c, void *s);
 
 ```c
 void addReplyNull(Connection *c);
-// 输出: $-1\r\n  (5 bytes)
+// → $-1\r\n  (5 bytes)
+```
+
+### 5.8 内存管理
+
+`replyEnsure` 内部逻辑：
+
+```c
+static int replyEnsure(Connection *c, size_t space) {
+    size_t needed = c->wlen + space;
+    if (needed <= c->wcap) return 1;    // 空间够，快速路径
+    size_t newcap = c->wcap * 2;         // 2× 扩容
+    if (newcap < needed) newcap = needed;
+    if (newcap < 256)    newcap = 256;   // 最小 256 字节
+    char *p = realloc(c->wbuf, newcap);
+    if (!p) { c->wlen = 0; return 0; }   // OOM: 清空缓冲区
+    c->wbuf = p;
+    c->wcap = newcap;
+    return 1;
+}
 ```
 
 ---
@@ -168,7 +234,7 @@ void addReplyNull(Connection *c);
 ### 6.1 `processCommand`
 
 ```c
-int processCommand(Connection *c, struct service *svc,
+int processCommand(struct Connection *c, struct service *svc,
                    RespObj *argv, int argc);
 ```
 
@@ -177,60 +243,76 @@ int processCommand(Connection *c, struct service *svc,
 ```
 processCommand(c, svc, argv, argc)
   │
-  ├─ argc < 1 ──────────────────→ SERVICE_ERR
-  ├─ argv[0] 不是 STR ──────────→ SERVICE_ERR
+  ├─ argc < 1 ──────────────────────────→ SERVICE_ERR
+  ├─ argv[0].type != RESP_STR ──────────→ SERVICE_ERR
   │
-  ├─ 遍历 cmd_table[]
-  │    ├─ respStrEqCase 大小写不敏感匹配
+  ├─ bsearch(argv[0], cmd_table, ...)
   │    ├─ 命中 → 检查 arity
   │    │    ├─ 参数不对 → addReplyError("wrong number...") → SERVICE_OK
   │    │    └─ 正确 → handler(c, svc, argv, argc) → SERVICE_OK
-  │    └─ 未命中 → 继续
-  │
-  └─ 全部未命中 → addReplyError("unknown command") → SERVICE_OK
+  │    └─ 未命中 → addReplyError("unknown command") → SERVICE_OK
 ```
+
+`cmdCompare` 使用 `strncasecmp`，命令名大小写不敏感（`get`/`Get`/`GET` 均可）。
 
 ---
 
-## 7. 命令表
+## 7. 当前命令
 
-### 7.1 当前命令
-
-| 命令 | arity | 说明 |
-|---|---|---|
+| 命令 | arity | 实现要点 |
+|------|-------|---------|
 | `PING` | 0 | `+PONG` |
-| `GET` | 1 | `$len\r\nval\r\n` 或 `$-1\r\n` |
-| `SET` | 2 | `+OK` |
-| `EXISTS` | 1 | `:1` 或 `:0` |
-| `DEL` | 1 | `:1` 或 `:0` |
-| `SELECT` | 1 | `+OK`（切换 svc->dbnum） |
+| `SELECT n` | 1 | 切换 `c->dbnum`，OOB 检查 |
+| `SET key val` | 2 | RESP_INT → VAL_INT 快速路径；RESP_STR → SDS 存储 |
+| `GET key` | 1 | VAL_INT → `:N`，VAL_STRING → `$len\r\n...\r\n`，不存在 → `$-1` |
+| `DEL key` | 1 | 同时清除 expires 字典 |
+| `EXISTS key` | 1 | 含惰性过期检查 |
+| `EXPIRE key sec` | 2 | 相对秒 → 绝对 `time_t` |
+| `PEXPIRE key ms` | 2 | 相对毫秒 → 绝对秒（`/1000`） |
+| `EXPIREAT key ts` | 2 | 绝对秒 |
+| `PEXPIREAT key ts` | 2 | 绝对毫秒 → 绝对秒（`/1000`） |
+| `TTL key` | 1 | -2=不存在, -1=无TTL, ≥0=剩余秒 |
+| `PTTL key` | 1 | 同上，剩余时间 ×1000 |
+| `PERSIST key` | 1 | 移除 expires 条目 |
 
-### 7.2 新增命令指南
+### 7.1 新增命令指南
 
-1. 在 `service.c` 中编写 `static void xxxCommand(...)` 
-2. 在 `cmd_table[]` 中添加 `{"XXX", N, xxxCommand},`
-3. 命令名用大写，匹配时自动 case-insensitive
+1. 在 `service.c` 中编写 `static void xxxCommand(Connection *c, struct service *svc, RespObj *argv, int argc)`
+2. 使用 `addReply*` 写入 `c->wbuf`
+3. 在 `cmd_table[]` 中**按字典序**插入 `{"XXX", N, xxxCommand},`
+4. 用 `sds key = respKeyToSds(&argv[1])` 获取 key，用完后 **必须 `sdsfree(key)`**（kvdb 内部会 `sdsdup`）
 
 ---
 
-## 8. 与上层集成（TODO）
+## 8. 多数据库模型
 
-`server.c` 的 `handleRead` 需要改造为：
+```
+struct Server
+  └── struct service svc
+        └── kvs[0]  → kvdb (主 dict + expires dict)
+            kvs[1]  → kvdb
+            ...
+            kvs[15] → kvdb
 
-```c
-// 伪代码
-static void handleRead(Connection *c, struct Server *s) {
-    // 1. read → c->rbuf 追加
-    // 2. respParse → RespObj obj
-    //    - RESP_AGAIN → 等待下一轮
-    //    - RESP_ERR   → addReplyError
-    //    - 成功 → 3
-    // 3. processCommand(c, s->svc, obj.elements, obj.len)
-    // 4. respFreeObj(obj)
-    // 5. c->state = CONN_STATE_WRITE
-}
+Connection
+  └── dbnum = 0        ← SELECT 切换，per-connection
+  └── svc → &Server.svc ← 回指针
 ```
 
-需要调整的结构：
-- `struct Server` 新增 `struct service svc;` 字段
-- `Connection` 新增 `struct Server *server;` 回指针（或 `handleRead` 多收一个参数）
+- `dbsize` 在 `serverCreate` 时由 `serviceInit(&s->svc, 16)` 固定为 16
+- `dbnum` 存在 Connection 上，每个连接独立选择库
+- 命令 handler 通过 `svc->kvs[c->dbnum]` 获取当前库
+
+---
+
+## 9. Key 所有权约定
+
+```
+调用方传入 key (RespObj 上的零拷贝指针)
+  └── respKeyToSds → sdsnewlen (栈上新建 SDS)
+        └── kvdbGet/Set/Del (传入 SDS)
+              └── kvdb 内部 sdsdup ← 存储层接管所有权
+        └── sdsfree ← 调用方释放栈上 SDS
+```
+
+**规则**：kvdb 内部自己管理所有 key 的所有权（`sdsdup`），调用方传入的 key 不会被接管，始终由调用方负责释放。这是 kvdb 作为 deep module 的核心接口约定。
