@@ -3,6 +3,8 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
+#include <unistd.h>
 
 static struct Server *g_s = NULL;
 
@@ -14,6 +16,8 @@ static void onSignal(int sig) {
 }
 
 int main(int argc, char **argv) {
+    srandom((unsigned int)(time(NULL) ^ getpid()));
+
     signal(SIGINT, onSignal);
     signal(SIGTERM, onSignal);
 
