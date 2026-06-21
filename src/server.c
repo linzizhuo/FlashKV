@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +19,9 @@
 
 #define MAX_EVENTS 1024
 #define BUF_SIZE 4096
+#define MAX_PIPELINE_BATCH 16  /* handleRead 单轮最多处理命令数，平衡吞吐与延迟 */
+
+static long long mstime(void);
 
 /* ---------- 辅助函数 ---------- */
 
@@ -87,6 +91,10 @@ static Connection *connNew(int fd, struct service *svc) {
     c->wlen = 0;
 
     setNonBlock(fd);
+    {
+        int opt = 1;
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+    }
     LOG_DEBUG("accept fd=%d", fd);
     return c;
 
@@ -111,27 +119,42 @@ static void connFree(Connection *c) {
 /* 读取 → 解析 RESP → 执行命令 → 追加响应
  *
  * 循环消费缓冲区中的完整命令（支持 pipeline）。
- * 响应通过 addReply* 追加到 wbuf 末尾，循环结束后一次性写回。
- */
-static void handleRead(Connection *c) {
-    /* 追加模式读：数据拼到 rbuf 尾部 */
-    size_t space = c->rcap - c->rlen - 1;   /* -1 留 '\0' */
-    if (space == 0) {
-        addReplyError(c, "request too large");
-        c->state = CONN_STATE_WRITE;
-        c->rlen  = 0;
-        return;
+ * 单轮最多处理 MAX_PIPELINE_BATCH 条，
+ * 剩余数据留在 rbuf，由 handleWrite 写完后触发下一轮。
+ *
+ * skip_read=true: 不读 socket，仅消费 rbuf 已有数据（handleWrite 尾触发）。
+ * skip_read=false: 先读 socket，再消费 rbuf（事件循环 EPOLLIN）。 */
+
+static void handleRead(Connection *c, int skip_read) {
+    if (!skip_read) {
+        size_t space = c->rcap - c->rlen - 1;
+        if (space == 0) {
+            addReplyError(c, "request too large");
+            c->state = CONN_STATE_WRITE;
+            c->rlen  = 0;
+            return;
+        }
+
+        ssize_t n = read(c->fd, c->rbuf + c->rlen, space);
+        if (n > 0) {
+            c->rlen += (size_t)n;
+            c->rbuf[c->rlen] = '\0';
+            LOG_DEBUG("recv fd=%d (%zd bytes)", c->fd, n);
+        } else if (n == 0) {
+            c->state = CONN_STATE_CLOSE;
+            return;
+        } else if (errno != EAGAIN) {
+            LOG_WARN("read fd=%d: %s", c->fd, strerror(errno));
+            c->state = CONN_STATE_CLOSE;
+            return;
+        }
     }
 
-    ssize_t n = read(c->fd, c->rbuf + c->rlen, space);
-    if (n > 0) {
-        c->rlen += (size_t)n;
-        c->rbuf[c->rlen] = '\0';
-        LOG_DEBUG("recv fd=%d (%zd bytes)", c->fd, n);
+    if (c->rlen == 0) return;
 
-        /* 循环消费缓冲区中的所有完整命令 */
-        int has_response = 0;
-        while (c->rlen > 0) {
+    {
+        int processed = 0;
+        while (c->rlen > 0 && processed < MAX_PIPELINE_BATCH) {
             RespObj obj;
             int ret = respParse(c->rbuf, c->rlen, &obj);
 
@@ -141,21 +164,19 @@ static void handleRead(Connection *c) {
                 } else {
                     addReplyError(c, "expected array");
                 }
-                /* 消费已解析的数据 */
                 if ((size_t)ret < c->rlen)
                     memmove(c->rbuf, c->rbuf + ret, c->rlen - ret);
                 c->rlen -= (size_t)ret;
                 respFreeObj(&obj);
                 c->state = CONN_STATE_WRITE;
-                has_response = 1;
+                processed++;
 
             } else if (ret == RESP_AGAIN) {
-                /* 数据不完整 — 仅在无成功命令时切回 READ，避免多余的 EPOLLOUT 唤醒 */
                 if (c->rlen >= c->rcap - 1) {
                     addReplyError(c, "request too large");
                     c->state = CONN_STATE_WRITE;
                     c->rlen  = 0;
-                } else if (!has_response) {
+                } else if (processed == 0) {
                     c->state = CONN_STATE_READ;
                 }
                 break;
@@ -167,15 +188,6 @@ static void handleRead(Connection *c) {
                 break;
             }
         }
-
-    } else if (n == 0) {
-        /* 客户端关闭 */
-        c->state = CONN_STATE_CLOSE;
-    } else {
-        if (errno != EAGAIN) {
-            LOG_WARN("read fd=%d: %s", c->fd, strerror(errno));
-            c->state = CONN_STATE_CLOSE;
-        }
     }
 }
 
@@ -186,7 +198,6 @@ static void handleWrite(Connection *c) {
             c->wlen -= (size_t)n;
             memmove(c->wbuf, c->wbuf + n, c->wlen);
         } else if (n == -1 && errno == EAGAIN) {
-            /* TCP 缓冲区满，等下一轮 EPOLLOUT */
             return;
         } else {
             LOG_WARN("write fd=%d: %s", c->fd, strerror(errno));
@@ -194,6 +205,17 @@ static void handleWrite(Connection *c) {
             return;
         }
     }
+
+    /* wbuf 清空后，若 rbuf 还有未消费数据（handleRead 被 MAX_PIPELINE_BATCH 截断），
+     * 立即触发下一轮处理，不等待 EPOLLIN */
+    if (c->rlen > 0) {
+        handleRead(c, 1);
+        if (c->state == CONN_STATE_WRITE) {
+            handleWrite(c);
+        }
+        return;
+    }
+
     c->state = CONN_STATE_READ;
 }
 
@@ -319,7 +341,7 @@ void serverRun(struct Server *s) {
             } else {
                 Connection *c = (Connection *)events[i].data.ptr;
                 if (events[i].events & EPOLLIN) {
-                    handleRead(c);
+                    handleRead(c, 0);
                 }
                 if (events[i].events & EPOLLOUT) {
                     handleWrite(c);

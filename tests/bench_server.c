@@ -332,6 +332,8 @@ static void doBenchGet(int fd, int n, int keyStart, int keyspace,
     /* Timed benchmark */
     Latency lat      = latNew();
     long long tStart = nowNs();
+    long long tWriteTotal = 0, tReadTotal = 0;
+    int    readCalls = 0;
     int lastReport   = 0;
     unsigned int rs  = seed;
 
@@ -344,6 +346,7 @@ static void doBenchGet(int fd, int n, int keyStart, int keyspace,
             keys[j] = keyStart + (int)(lcgRand(&rs) % (unsigned int)keyspace);
 
         /* 一口气发送 batch 条命令 */
+        long long tw0 = nowNs();
         for (int j = 0; j < batch; j++) {
             int cmdlen = formatGet(cmdbuf, sizeof(cmdbuf), keys[j]);
             if (writeAll(fd, cmdbuf, (size_t)cmdlen) != 0) {
@@ -351,6 +354,7 @@ static void doBenchGet(int fd, int n, int keyStart, int keyspace,
                 exit(1);
             }
         }
+        tWriteTotal += nowNs() - tw0;
 
         /* 一口气读回 batch 条响应（读到足够 \r\n 为止） */
         long long t1 = nowNs();
@@ -365,6 +369,7 @@ static void doBenchGet(int fd, int n, int keyStart, int keyspace,
                 if (errno == EAGAIN || errno == EINTR) continue;
                 perror("read"); exit(1);
             }
+            readCalls++;
             bufOff += (int)r;
             batchBuf[bufOff] = '\0';
             gotResp = 0;
@@ -372,6 +377,7 @@ static void doBenchGet(int fd, int n, int keyStart, int keyspace,
                 if (batchBuf[k] == '\r' && batchBuf[k + 1] == '\n') gotResp++;
         }
         long long batchNs = nowNs() - t1;
+        tReadTotal += batchNs;
         long long perOp   = batchNs / batch;
         for (int j = 0; j < batch; j++) latRecord(&lat, perOp);
 
@@ -391,6 +397,8 @@ static void doBenchGet(int fd, int n, int keyStart, int keyspace,
 
     printf("\n  GET 吞吐量: %.0f ops/s  (%lld ms total, pipeline=%d)\n",
            rate, totalNs / 1000000, pipeline);
+    printf("  耗时分解: write=%.0f ms  read=%.0f ms   readCalls=%d\n",
+           tWriteTotal / 1e6, tReadTotal / 1e6, readCalls);
     printf("  延迟分布 (单次摊销, 网络 round-trip ÷ %d):\n", pipeline);
     latReport(&lat, "GET");
     printf("\n");
@@ -426,6 +434,8 @@ static void doBenchSet(int fd, int n, int keyStart, int keyspace,
     /* Timed benchmark */
     Latency lat      = latNew();
     long long tStart = nowNs();
+    long long tWriteTotal = 0, tReadTotal = 0;
+    int    readCalls = 0;
     int lastReport   = 0;
     unsigned int rs  = seed;
 
@@ -438,6 +448,7 @@ static void doBenchSet(int fd, int n, int keyStart, int keyspace,
             keys[j] = keyStart + (int)(lcgRand(&rs) % (unsigned int)keyspace);
 
         /* 一口气发送 batch 条命令 */
+        long long tw0 = nowNs();
         for (int j = 0; j < batch; j++) {
             int cmdlen = formatSet(cmdbuf, sizeof(cmdbuf), keys[j]);
             if (writeAll(fd, cmdbuf, (size_t)cmdlen) != 0) {
@@ -445,6 +456,7 @@ static void doBenchSet(int fd, int n, int keyStart, int keyspace,
                 exit(1);
             }
         }
+        tWriteTotal += nowNs() - tw0;
 
         /* 一口气读回 batch 条响应 */
         long long t1 = nowNs();
@@ -459,6 +471,7 @@ static void doBenchSet(int fd, int n, int keyStart, int keyspace,
                 if (errno == EAGAIN || errno == EINTR) continue;
                 perror("read"); exit(1);
             }
+            readCalls++;
             bufOff += (int)r;
             batchBuf[bufOff] = '\0';
             gotResp = 0;
@@ -466,6 +479,7 @@ static void doBenchSet(int fd, int n, int keyStart, int keyspace,
                 if (batchBuf[k] == '\r' && batchBuf[k + 1] == '\n') gotResp++;
         }
         long long batchNs = nowNs() - t1;
+        tReadTotal += batchNs;
         long long perOp   = batchNs / batch;
         for (int j = 0; j < batch; j++) latRecord(&lat, perOp);
 
@@ -485,6 +499,8 @@ static void doBenchSet(int fd, int n, int keyStart, int keyspace,
 
     printf("\n  SET overwrite 吞吐量: %.0f ops/s  (%lld ms total, pipeline=%d)\n",
            rate, totalNs / 1000000, pipeline);
+    printf("  耗时分解: write=%.0f ms  read=%.0f ms   readCalls=%d\n",
+           tWriteTotal / 1e6, tReadTotal / 1e6, readCalls);
     printf("  延迟分布 (单次摊销, 网络 round-trip ÷ %d):\n", pipeline);
     latReport(&lat, "SET");
     printf("\n");
