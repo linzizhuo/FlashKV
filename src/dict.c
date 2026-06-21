@@ -301,8 +301,9 @@ struct dict *dictnew(unsigned long n, struct dictType *type)
 }
 static void dictEntryFree(struct dict *d, struct dictEntry *de)
 {
-    d->type->keyFree(de->key);
-    if(d->type->valFree) // 适配void*直接存储数据
+    if (d->type->keyFree)
+        d->type->keyFree(de->key);
+    if (d->type->valFree) // 适配void*直接存储数据
         d->type->valFree(de->val);
     free(de);
 }

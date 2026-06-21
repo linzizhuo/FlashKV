@@ -2,6 +2,7 @@
 #define _KVDB_H
 
 #include "val_obj.h"
+#include "zset.h"
 #include <time.h>
 
 /* 单个数据库：主 dict + expires dict 的封装。
@@ -34,5 +35,11 @@ void      kvdbActiveExpireCycle(kvdb *kv);
 
 /* ---- 定期缩容 ---- */
 void      kvdbTryResize(kvdb *kv);         /* 填充率 < 10% 时缩主 dict + expires dict */
+
+/* ---- ZSET ---- */
+zset *kvdbGetZset(kvdb *kv, const void *key, int *found);
+  /* *found: 1=是 zset, 0=key 不存在, -1=类型不匹配; 返回 zset 或 NULL */
+zset *kvdbGetOrCreateZset(kvdb *kv, const void *key);
+  /* 不存在时自动创建 ValObj+zsetNew 并写入; 类型不匹配或 OOM 返回 NULL */
 
 #endif

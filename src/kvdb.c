@@ -215,3 +215,38 @@ void kvdbTryResize(kvdb *kv)
     if (dictNeedsResize(kv->expires))
         dictShrink(kv->expires);
 }
+
+/* ---- ZSET ---- */
+
+zset *kvdbGetZset(kvdb *kv, const void *key, int *found)
+{
+    ValObj *obj = kvdbGet(kv, key);
+    if (!obj) {
+        if (found) *found = 0;
+        return NULL;
+    }
+    if (obj->type != VAL_ZSET) {
+        if (found) *found = -1;
+        return NULL;
+    }
+    if (found) *found = 1;
+    return obj->val.zs;
+}
+
+zset *kvdbGetOrCreateZset(kvdb *kv, const void *key)
+{
+    ValObj *obj = kvdbGet(kv, key);
+    if (obj) {
+        if (obj->type != VAL_ZSET) return NULL;
+        return obj->val.zs;
+    }
+
+    /* key 不存在：创建 zset 并写入 */
+    ValObj *newobj = valObjCreateZset();
+    if (!newobj) return NULL;
+
+    ValObj *old = kvdbSet(kv, key, newobj);
+    if (old) valObjFree(old);     /* 理论上不可能，防御性释放 */
+
+    return newobj->val.zs;
+}

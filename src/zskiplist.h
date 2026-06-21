@@ -29,6 +29,12 @@ typedef struct zskiplist
 zskiplist *zslnew(void);
 void zslfree(zskiplist *zsl);
 
+/*
+ * 插入 (score, ele) 节点，接管 sds 所有权。
+ *
+ * 按 (score, ele) 字典序定位。仅检测精确重复项——若 (score, ele) 完全相同则释放
+ * 传入的 ele 并返回已有节点。ele 级唯一性由上层 zset 模块 (dict) 保证。
+ */
 zskiplistNode *zslinsert(zskiplist *zsl, double score, sds ele);
 int zsldel(zskiplist *zsl, double score, sds ele);
 

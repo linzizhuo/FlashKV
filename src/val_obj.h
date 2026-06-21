@@ -1,8 +1,10 @@
 #ifndef _VAL_OBJ_H
 #define _VAL_OBJ_H
 #include "sds.h"
+#include "zset.h"
 #include <stdlib.h>
 #include <stdint.h>
+
 enum ValType
 {
     VAL_STRING,
@@ -20,10 +22,25 @@ typedef struct
     {
         sds str;
         long long ll;
-        void *l;  // list *
-        void *zs; // zset *
+        void *l;   // list *
+        zset *zs;   // zset: dict + skip list of (score, sds) pairs
     } val;
 } ValObj;
+
+/* ---- ZSET helpers ---- */
+
+static inline ValObj *valObjCreateZset(void)
+{
+    ValObj *o = malloc(sizeof(*o));
+    if (!o) return NULL;
+    o->type = VAL_ZSET;
+    o->val.zs = zsetNew();
+    if (!o->val.zs) {
+        free(o);
+        return NULL;
+    }
+    return o;
+}
 
 static inline void valObjFree(void *ptr)
 {
@@ -38,7 +55,8 @@ static inline void valObjFree(void *ptr)
         break;
     case VAL_LIST: /* listRelease */;
         break;
-    case VAL_ZSET: /* zsetFree */;
+    case VAL_ZSET:
+        zsetFree(o->val.zs);
         break;
     default:
         break;
