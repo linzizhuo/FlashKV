@@ -1,9 +1,7 @@
 #include "service.h"
 #include "server.h"
-#include "dict_type.h"
 #include "sds.h"
 #include "val_obj.h"
-#include "ttl.h"
 
 #include <stdbool.h>
 #include <stdlib.h>
@@ -73,13 +71,11 @@ void addReplyOK(Connection *c)
  *  工具函数
  * ================================================================ */
 
-/* 从 RespObj 创建 sds — 几乎所有命令都要走这一步 */
 static inline sds respKeyToSds(const RespObj *o)
 {
     return sdsnewlen(o->str, o->len);
 }
 
-/* 字符串 → long long，ok 表示是否完全解析成功 */
 static long long parseLongLong(const RespObj *o, int *ok)
 {
     char tmp[32];
@@ -90,26 +86,6 @@ static long long parseLongLong(const RespObj *o, int *ok)
     long long val = strtoll(tmp, &end, 10);
     if (ok) *ok = (*end == '\0');
     return val;
-}
-
-/* ================================================================
- *  惰性删除
- *
- *  每个可能访问 key 的命令在执行前调一次。
- *  h 是预计算的 hash 指针，此函数不修改 *h。
- *  返回 true 表示 key 已过期并被删除，调用方应返回 nil / 0 / -2。
- * ================================================================ */
-
-static bool expireIfNeeded(struct dict *db, struct dict *expires,
-                           const void *key, hash_t *h)
-{
-    tstamp_t *when = keyTtlFind(expires, key, *h);
-    if (!when) return false;                       /* 没设 TTL */
-    if ((time_t)(*when) >= time(NULL)) return false;  /* 未过期 */
-
-    dictDelete(expires, key, h);  /* 先删 expires（释放其 sdsdup 的 key） */
-    dictDelete(db, key, h);       /* 再删主 dict（释放主 key + ValObj） */
-    return true;
 }
 
 /* ================================================================
@@ -160,16 +136,7 @@ static void getCommand(Connection *c, struct service *svc,
     sds key = respKeyToSds(&argv[1]);
     if (!key) { addReplyError(c, "OOM"); return; }
 
-    struct dict *db      = svc->db[c->dbnum];
-    struct dict *expires = svc->expires[c->dbnum];
-    hash_t h = db->type->hash(key);
-
-    if (expireIfNeeded(db, expires, key, &h)) {
-        addReplyNull(c);
-        goto done;
-    }
-
-    ValObj *obj = dictfind(db, key, &h);
+    ValObj *obj = kvdbGet(svc->kvs[c->dbnum], key);
     if (!obj) {
         addReplyNull(c);
     } else if (obj->type == VAL_INT) {
@@ -179,7 +146,6 @@ static void getCommand(Connection *c, struct service *svc,
     } else {
         addReplyNull(c);
     }
-done:
     sdsfree(key);
 }
 
@@ -196,7 +162,6 @@ static void setCommand(Connection *c, struct service *svc,
     sds key = respKeyToSds(&argv[1]);
     if (!key) { addReplyError(c, "OOM"); return; }
 
-    /* 构造 ValObj */
     ValObj *obj = malloc(sizeof(ValObj));
     if (!obj) { sdsfree(key); addReplyError(c, "OOM"); return; }
 
@@ -210,19 +175,9 @@ static void setCommand(Connection *c, struct service *svc,
         obj->val.str = val;
     }
 
-    struct dict *db      = svc->db[c->dbnum];
-    struct dict *expires = svc->expires[c->dbnum];
-    hash_t h = db->type->hash(key);
-
-    ValObj *old = dictfind(db, key, &h);
-    dictReplace(db, key, obj, &h);
-    dictDelete(expires, key, &h);   /* SET 覆盖 → 清除旧 TTL */
-
-    if (old) {
-        valObjFree(old);   /* 释放被覆盖的旧 ValObj */
-        sdsfree(key);      /* 旧 key 仍在 dict 里，新 key 未被插入 */
-    }
-    /* 新 key: 所有权已在 dictReplace 中转移给 dict */
+    ValObj *old = kvdbSet(svc->kvs[c->dbnum], key, obj);
+    if (old) valObjFree(old);
+    sdsfree(key);   /* kvdb 内部已 dup，调用方始终释放 */
     addReplyOK(c);
 }
 
@@ -237,12 +192,7 @@ static void existsCommand(Connection *c, struct service *svc,
     sds key = respKeyToSds(&argv[1]);
     if (!key) { addReplyError(c, "OOM"); return; }
 
-    struct dict *db      = svc->db[c->dbnum];
-    struct dict *expires = svc->expires[c->dbnum];
-    hash_t h = db->type->hash(key);
-
-    expireIfNeeded(db, expires, key, &h);
-    addReplyInteger(c, dictfind(db, key, &h) ? 1 : 0);
+    addReplyInteger(c, kvdbExists(svc->kvs[c->dbnum], key));
     sdsfree(key);
 }
 
@@ -257,25 +207,14 @@ static void delCommand(Connection *c, struct service *svc,
     sds key = respKeyToSds(&argv[1]);
     if (!key) { addReplyError(c, "OOM"); return; }
 
-    struct dict *db      = svc->db[c->dbnum];
-    struct dict *expires = svc->expires[c->dbnum];
-    hash_t h = db->type->hash(key);
-
-    int ret = dictDelete(db, key, &h);
-    dictDelete(expires, key, &h);   /* 顺手清 TTL */
-    addReplyInteger(c, ret == DICT_OK ? 1 : 0);
+    addReplyInteger(c, kvdbDel(svc->kvs[c->dbnum], key));
     sdsfree(key);
 }
 
 /* ================================================================
  *  命令：EXPIRE / PEXPIRE / EXPIREAT / PEXPIREAT
  *
- *  四个命令共享同一实现，mode 决定时间语义：
- *    EXPIRE_SEC    秒级相对
- *    PEXPIRE_MS    毫秒相对
- *    EXPIREAT_SEC  秒级绝对
- *    PEXPIREAT_MS  毫秒绝对
- *  内部统一转换为绝对秒（time_t）存入 expires dict。
+ *  内部统一转 time_t 绝对秒，交给 kvdbExpire。
  * ================================================================ */
 
 enum ExpireMode { EXPIRE_SEC, PEXPIRE_MS, EXPIREAT_SEC, PEXPIREAT_MS };
@@ -300,17 +239,6 @@ static void expireGenericCommand(Connection *c, struct service *svc,
         return;
     }
 
-    struct dict *db      = svc->db[c->dbnum];
-    struct dict *expires = svc->expires[c->dbnum];
-    hash_t h = db->type->hash(key);
-
-    if (!dictfind(db, key, &h)) {
-        addReplyInteger(c, 0);   /* key 不存在 */
-        sdsfree(key);
-        return;
-    }
-
-    /* 统一转绝对秒 */
     time_t when;
     switch (mode) {
     case EXPIRE_SEC:    when = time(NULL) + (time_t)val;       break;
@@ -320,18 +248,8 @@ static void expireGenericCommand(Connection *c, struct service *svc,
     default:            when = 0; break;
     }
 
-    /* 原地更新 or 新插入（需 sdsdup 独立 key） */
-    tstamp_t *old = keyTtlFind(expires, key, h);
-    if (old) {
-        *old = (tstamp_t)when;
-        sdsfree(key);
-    } else {
-        sds expkey = sdsdup(key);
-        if (!expkey) { addReplyError(c, "OOM"); sdsfree(key); return; }
-        dictAdd(expires, expkey, (void *)when, &h);
-        sdsfree(key);
-    }
-    addReplyInteger(c, 1);
+    addReplyInteger(c, kvdbExpire(svc->kvs[c->dbnum], key, when));
+    sdsfree(key);
 }
 
 static void expireCommand(Connection *c, struct service *svc,
@@ -350,10 +268,7 @@ static void pexpireatCommand(Connection *c, struct service *svc,
 /* ================================================================
  *  命令：TTL / PTTL
  *
- *  共享实现，millisec=0 返回秒，=1 返回毫秒。
- *  -2: key 不存在（或已过期并被惰性删除）
- *  -1: key 存在但无 TTL
- *  ≥0: 剩余存活时间
+ *  kvdbTTL 返回秒，PTTL 时乘 1000。
  * ================================================================ */
 
 static void ttlGenericCommand(Connection *c, struct service *svc,
@@ -367,26 +282,9 @@ static void ttlGenericCommand(Connection *c, struct service *svc,
     sds key = respKeyToSds(&argv[1]);
     if (!key) { addReplyError(c, "OOM"); return; }
 
-    struct dict *db      = svc->db[c->dbnum];
-    struct dict *expires = svc->expires[c->dbnum];
-    hash_t h = db->type->hash(key);
-
-    expireIfNeeded(db, expires, key, &h);
-    if (!dictfind(db, key, &h)) {
-        addReplyInteger(c, -2);
-        goto done;
-    }
-
-    tstamp_t *when = keyTtlFind(expires, key, h);
-    if (!when) {
-        addReplyInteger(c, -1);
-    } else {
-        time_t remain = (time_t)(*when) - time(NULL);
-        if (remain < 0) remain = 0;
-        addReplyInteger(c, millisec ? (long long)remain * 1000
-                                    : (long long)remain);
-    }
-done:
+    long long ttl = kvdbTTL(svc->kvs[c->dbnum], key);
+    if (millisec && ttl > 0) ttl *= 1000;
+    addReplyInteger(c, ttl);
     sdsfree(key);
 }
 
@@ -412,17 +310,7 @@ static void persistCommand(Connection *c, struct service *svc,
     sds key = respKeyToSds(&argv[1]);
     if (!key) { addReplyError(c, "OOM"); return; }
 
-    struct dict *db      = svc->db[c->dbnum];
-    struct dict *expires = svc->expires[c->dbnum];
-    hash_t h = db->type->hash(key);
-
-    if (!dictfind(db, key, &h) || !keyTtlFind(expires, key, h)) {
-        addReplyInteger(c, 0);
-        goto done;
-    }
-    dictDelete(expires, key, &h);
-    addReplyInteger(c, 1);
-done:
+    addReplyInteger(c, kvdbPersist(svc->kvs[c->dbnum], key));
     sdsfree(key);
 }
 
@@ -430,7 +318,6 @@ done:
  *  命令表
  *
  *  按字典序排列，供 bsearch 二分查找。
- *  arity = 参数个数（不含命令名），-1 表示变长。
  * ================================================================ */
 
 static Command cmd_table[] = {
@@ -465,9 +352,6 @@ static int cmdCompare(const void *key, const void *elem)
 
 /* ================================================================
  *  命令分发
- *
- *  server 层每读到一条完整命令就调一次。
- *  返回值 SERVICE_ERR → server 关闭连接。
  * ================================================================ */
 
 int processCommand(Connection *c, struct service *svc,
@@ -501,26 +385,16 @@ int serviceInit(struct service *svc, unsigned int dbsize)
     if (!svc || dbsize == 0) return SERVICE_ERR;
 
     svc->dbsize = dbsize;
-    svc->db      = calloc(dbsize, sizeof(struct dict *));
-    svc->expires = calloc(dbsize, sizeof(struct dict *));
-    if (!svc->db || !svc->expires) {
-        free(svc->db); free(svc->expires);
-        svc->db = svc->expires = NULL;
-        return SERVICE_ERR;
-    }
+    svc->kvs = calloc(dbsize, sizeof(kvdb *));
+    if (!svc->kvs) return SERVICE_ERR;
 
     for (unsigned int i = 0; i < dbsize; i++) {
-        svc->db[i]      = dictnew(DICT_HT_INITIAL_SIZE, &dictTypeSds);
-        svc->expires[i] = dictnew(DICT_HT_INITIAL_SIZE, &dictTTL);
-        if (!svc->db[i] || !svc->expires[i]) {
-            for (unsigned int j = 0; j < i; j++) {
-                dictfree(svc->db[j]);
-                dictfree(svc->expires[j]);
-            }
-            dictfree(svc->db[i]);
-            dictfree(svc->expires[i]);
-            free(svc->db); free(svc->expires);
-            svc->db = svc->expires = NULL;
+        svc->kvs[i] = kvdbNew();
+        if (!svc->kvs[i]) {
+            for (unsigned int j = 0; j < i; j++)
+                kvdbFree(svc->kvs[j]);
+            free(svc->kvs);
+            svc->kvs = NULL;
             return SERVICE_ERR;
         }
     }
@@ -529,12 +403,9 @@ int serviceInit(struct service *svc, unsigned int dbsize)
 
 void serviceFree(struct service *svc)
 {
-    if (!svc || !svc->db) return;
-    for (unsigned int i = 0; i < svc->dbsize; i++) {
-        dictfree(svc->db[i]);
-        dictfree(svc->expires[i]);
-    }
-    free(svc->db);
-    free(svc->expires);
-    svc->db = svc->expires = NULL;
+    if (!svc || !svc->kvs) return;
+    for (unsigned int i = 0; i < svc->dbsize; i++)
+        kvdbFree(svc->kvs[i]);
+    free(svc->kvs);
+    svc->kvs = NULL;
 }

@@ -10,13 +10,14 @@ SDS_SRC = src/sds.c
 test_sds: tests/test_sds.c $(SDS_SRC)
 	$(CC) $(CFLAGS) -I src -o $@ $^
 
-# ---------- Dict（C 实现） ----------
+# ---------- Dict + KVDB（C 实现） ----------
 
-DICT_SRC = src/dict.c src/dict_type.c
-DICT_DEPS = src/dict.h src/dict_type.h src/sds.h src/val_obj.h
+DICT_SRC  = src/dict.c src/dict_type.c
+KVDB_SRC  = src/kvdb.c
+DICT_DEPS = src/dict.h src/dict_type.h src/sds.h src/val_obj.h src/kvdb.h src/ttl.h
 
 test_dict: tests/test_dict.c $(DICT_SRC) $(SDS_SRC) $(DICT_DEPS)
-	$(CC) $(CFLAGS) -I src -o $@ $^
+	$(CC) $(CFLAGS) -I src -o $@ tests/test_dict.c $(DICT_SRC) $(SDS_SRC)
 
 bench_dict: tests/bench_dict.c $(DICT_SRC) $(SDS_SRC)
 	$(CC) $(CFLAGS) -O2 -I src -o $@ $^ -lm
@@ -25,9 +26,9 @@ bench_dict: tests/bench_dict.c $(DICT_SRC) $(SDS_SRC)
 # ---------- 服务端 ----------
 
 SERVER_SRC = src/main.c src/server.c src/log.c src/service.c \
-             src/dict.c src/dict_type.c src/resp.c src/sds.c
-SERVER_DEPS = src/server.h src/log.h src/service.h \
-              src/dict.h src/dict_type.h src/resp.h src/sds.h src/val_obj.h
+             src/kvdb.c src/dict.c src/dict_type.c src/resp.c src/sds.c
+SERVER_DEPS = src/server.h src/log.h src/service.h src/kvdb.h \
+              src/dict.h src/dict_type.h src/resp.h src/sds.h src/val_obj.h src/ttl.h
 
 flashkv: $(SERVER_SRC) $(SERVER_DEPS)
 	$(CC) $(CFLAGS) -I src -o $@ $(SERVER_SRC)

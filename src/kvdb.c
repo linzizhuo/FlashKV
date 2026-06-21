@@ -1,0 +1,151 @@
+#include "kvdb.h"
+#include "dict_type.h"
+#include "ttl.h"
+#include "sds.h"
+
+#include <stdbool.h>
+#include <stdlib.h>
+
+#define DICT_HT_INITIAL_SIZE 4
+
+struct kvdb
+{
+    struct dict *dict;     /* 主存储：key → ValObj */
+    struct dict *expires;  /* TTL 字典：key → 绝对秒时间戳（inline） */
+};
+
+/* ---- 内部：惰性删除 ---- */
+
+static bool expireIfNeeded(kvdb *kv, const void *key, hash_t *h)
+{
+    tstamp_t *when = keyTtlFind(kv->expires, key, *h);
+    if (!when) return false;
+    if ((time_t)(*when) >= time(NULL)) return false;
+
+    dictDelete(kv->expires, key, h);
+    dictDelete(kv->dict,   key, h);
+    return true;
+}
+
+/* ---- 生命周期 ---- */
+
+kvdb *kvdbNew(void)
+{
+    kvdb *kv = malloc(sizeof(*kv));
+    if (!kv) return NULL;
+
+    kv->dict    = dictnew(DICT_HT_INITIAL_SIZE, &dictTypeSds);
+    kv->expires = dictnew(DICT_HT_INITIAL_SIZE, &dictTTL);
+
+    if (!kv->dict || !kv->expires) {
+        dictfree(kv->dict);
+        dictfree(kv->expires);
+        free(kv);
+        return NULL;
+    }
+    return kv;
+}
+
+void kvdbFree(kvdb *kv)
+{
+    if (!kv) return;
+    dictfree(kv->dict);
+    dictfree(kv->expires);
+    free(kv);
+}
+
+/* ---- key-value ---- */
+
+ValObj *kvdbGet(kvdb *kv, const void *key)
+{
+    hash_t h = kv->dict->type->hash(key);
+    expireIfNeeded(kv, key, &h);
+    return dictfind(kv->dict, key, &h);
+}
+
+ValObj *kvdbSet(kvdb *kv, const void *key, ValObj *val)
+{
+    hash_t h = kv->dict->type->hash(key);
+    ValObj *old = dictfind(kv->dict, key, &h);
+
+    if (old) {
+        /* key 已存在：原地覆写值，不产生新 key */
+        dictReplace(kv->dict, (void *)key, val, &h);
+    } else {
+        /* 新 key：dup 后插入，kvdb 拥有 dupkey */
+        sds dupkey = sdsdup((sds)key);
+        if (!dupkey) return NULL;
+        if (dictAdd(kv->dict, dupkey, val, &h) != DICT_OK) {
+            /* rehash 间 key 被搬走了，极少发生 */
+            sdsfree(dupkey);
+            dictReplace(kv->dict, (void *)key, val, &h);
+        }
+    }
+
+    dictDelete(kv->expires, key, &h);   /* SET 覆盖 → 清除旧 TTL */
+    return old;
+}
+
+int kvdbDel(kvdb *kv, const void *key)
+{
+    hash_t h = kv->dict->type->hash(key);
+    int ret = dictDelete(kv->dict, key, &h);
+    dictDelete(kv->expires, key, &h);   /* 顺手清 TTL */
+    return ret == DICT_OK ? 1 : 0;
+}
+
+int kvdbExists(kvdb *kv, const void *key)
+{
+    hash_t h = kv->dict->type->hash(key);
+    expireIfNeeded(kv, key, &h);
+    return dictfind(kv->dict, key, &h) ? 1 : 0;
+}
+
+/* ---- TTL ---- */
+
+int kvdbExpire(kvdb *kv, const void *key, time_t when)
+{
+    hash_t h = kv->dict->type->hash(key);
+
+    if (!dictfind(kv->dict, key, &h))
+        return 0;   /* key 不存在 */
+
+    tstamp_t *old = keyTtlFind(kv->expires, key, h);
+    if (old) {
+        *old = (tstamp_t)when;              /* 原地更新 */
+    } else {
+        sds expkey = sdsdup((sds)key);      /* expires 持独立 key */
+        if (!expkey) return 0;
+        dictAdd(kv->expires, expkey, (void *)when, &h);
+    }
+    return 1;
+}
+
+long long kvdbTTL(kvdb *kv, const void *key)
+{
+    hash_t h = kv->dict->type->hash(key);
+
+    expireIfNeeded(kv, key, &h);
+    if (!dictfind(kv->dict, key, &h))
+        return -2;   /* 不存在或已过期 */
+
+    tstamp_t *when = keyTtlFind(kv->expires, key, h);
+    if (!when)
+        return -1;   /* 无 TTL */
+
+    time_t remain = (time_t)(*when) - time(NULL);
+    return remain > 0 ? (long long)remain : 0;
+}
+
+int kvdbPersist(kvdb *kv, const void *key)
+{
+    hash_t h = kv->dict->type->hash(key);
+
+    if (!dictfind(kv->dict, key, &h))
+        return 0;
+    if (!keyTtlFind(kv->expires, key, h))
+        return 0;
+
+    dictDelete(kv->expires, key, &h);
+    return 1;
+}

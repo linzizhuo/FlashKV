@@ -2,9 +2,7 @@
 #define _SERVICE_H
 
 #include "resp.h"
-#include "dict.h"
-
-#define DICT_HT_INITIAL_SIZE 4
+#include "kvdb.h"
 
 #define SERVICE_OK    0
 #define SERVICE_ERR  -1   /* 协议错误（argv 为空/命令名非 STR） */
@@ -13,8 +11,7 @@
 /* 服务层状态 */
 struct service
 {
-    struct dict **db;
-    struct dict **expires;   /* TTL 独立字典，key→绝对秒时间戳（inline 存储） */
+    kvdb **kvs;
     unsigned int dbsize;
 };
 
