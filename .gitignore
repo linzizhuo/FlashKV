@@ -5,6 +5,7 @@ test_dict
 test_resp
 test_sds
 bench_dict
+bench_server
 test_dict_dbg
 .claude/
 *.o

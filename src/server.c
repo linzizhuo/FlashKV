@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 199309L
+
 #include "server.h"
 #include "log.h"
 #include "resp.h"
@@ -11,6 +13,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MAX_EVENTS 1024
@@ -228,6 +231,23 @@ static void handleClose(Connection *c, int epoll_fd) {
     connFree(c);
 }
 
+/* ---------- 定期任务 ---------- */
+
+static long long mstime(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static void databasesCron(struct Server *s)
+{
+    /* 每次只跑一个库，轮转，16 个库 1.6 秒一圈 */
+    kvdbActiveExpireCycle(s->svc.kvs[s->cron_db]);
+    if (++s->cron_db >= s->svc.dbsize)
+        s->cron_db = 0;
+}
+
 /* ---------- 服务器生命周期 ---------- */
 
 struct Server *serverCreate(int port) {
@@ -249,6 +269,8 @@ struct Server *serverCreate(int port) {
     }
 
     s->stop = 0;
+    s->last_cron_ms = mstime();
+    s->cron_db = 0;
 
     /* 初始化服务层（16 个数据库） */
     if (serviceInit(&s->svc, 16) != SERVICE_OK) {
@@ -284,7 +306,7 @@ void serverRun(struct Server *s) {
     LOG_INFO("server started");
 
     while (!s->stop) {
-        int n = epoll_wait(s->epoll_fd, events, MAX_EVENTS, -1);
+        int n = epoll_wait(s->epoll_fd, events, MAX_EVENTS, 100);
         if (n == -1) {
             if (errno == EINTR) continue; /* 被信号打断 */
             LOG_ERROR("epoll_wait: %s", strerror(errno));
@@ -316,6 +338,13 @@ void serverRun(struct Server *s) {
                     epoll_ctl(s->epoll_fd, EPOLL_CTL_MOD, c->fd, &ev);
                 }
             }
+        }
+
+        /* 每 100ms 执行一次定期任务（过期 key 抽样删除） */
+        long long now = mstime();
+        if (now - s->last_cron_ms >= 100) {
+            databasesCron(s);
+            s->last_cron_ms = now;
         }
     }
 

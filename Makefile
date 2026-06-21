@@ -23,6 +23,11 @@ bench_dict: tests/bench_dict.c $(DICT_SRC) $(SDS_SRC)
 	$(CC) $(CFLAGS) -O2 -I src -o $@ $^ -lm
 	./$@ $(N)
 
+# ---------- 服务端 Benchmark ----------
+
+bench_server: tests/bench_server.c
+	$(CC) $(CFLAGS) -O2 -o $@ $^ -lm
+
 # ---------- 服务端 ----------
 
 SERVER_SRC = src/main.c src/server.c src/log.c src/service.c \
@@ -47,6 +52,6 @@ all: test_resp test_sds test_dict flashkv
 	@echo "======= 全部构建完成 ======="
 
 clean:
-	rm -f test_resp test_sds test_dict flashkv bench_dict
+	rm -f test_resp test_sds test_dict flashkv bench_dict bench_server
 
 .PHONY: clean
