@@ -37,6 +37,8 @@ struct Server {
     int listen_fd;
     int epoll_fd;
     int stop;                /* 退出标志 */
+    long long last_cron_ms;  /* 上次 cron 执行时间 */
+    unsigned int cron_db;    /* 当前轮到的数据库下标 */
     struct service svc;      /* 服务层（嵌入式，随 server 生命周期） */
 };
 

@@ -51,6 +51,9 @@ int dictDelete(struct dict *d, const void *key, void* hash);
 
 void *dictValGetPtr(struct dictEntry *entry); // entry->val
 void *dictValGetRef(struct dictEntry *entry); // &entry->val
+dictEntry *dictGetRandomKey(struct dict *d);
+void *dictEntryGetKey(const dictEntry *de);
+void *dictEntryGetVal(struct dict *d, const dictEntry *de);
 /* ---- rehash 控制（供测试 / 调优使用）---- */
 // int  dictRehash(struct dict *d);
 // int  dictRehashStep(struct dict *d, unsigned long number);

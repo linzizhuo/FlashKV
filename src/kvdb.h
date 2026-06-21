@@ -29,4 +29,7 @@ int       kvdbExpire(kvdb *kv, const void *key, time_t when); /* 1=成功 0=key�
 long long kvdbTTL(kvdb *kv, const void *key);      /* -2=不存在 -1=无TTL ≥0=剩余秒 */
 int       kvdbPersist(kvdb *kv, const void *key);  /* 1=已移除 0=无TTL */
 
+/* ---- 定期淘汰 ---- */
+void      kvdbActiveExpireCycle(kvdb *kv);
+
 #endif

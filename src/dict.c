@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #define ROTL64(x, r) (((x) << (r)) | ((x) >> (64 - (r))))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
+#define DICT_RANDOM_BUF_LEN 16  /* dictGetRandomKey 栈缓存容量，>此长度走兜底 */
 
 static void dicthtfree(struct dict *d, struct dictht *dht);
 
@@ -286,6 +287,7 @@ void dictfree(struct dict *d)
         dicthtfree(d, &d->ht[1]);
     free(d);
 }
+
 int dictDelete(struct dict *d, const void *key, void *hash)
 {
     if (d == NULL || key == NULL)
@@ -316,3 +318,71 @@ int dictDelete(struct dict *d, const void *key, void *hash)
     }
     return DICT_ERROR;
 }
+
+dictEntry *dictGetRandomKey(struct dict *d)
+{
+    /* 空 dict */
+    if (d->ht[0].used == 0 && d->ht[1].used == 0)
+        return NULL;
+
+    /* 渐进式 rehash：先搬一个非空桶，降低采样偏差 */
+    if (dictIsRehashing(d))
+        dictRehashData(d, 1);
+
+    struct dictht *ht = &d->ht[0];
+
+    /* 随机重试找非空桶（负载因子 > 0.5 时平均 < 2 次） */
+    unsigned long idx;
+    do {
+        if (dictIsRehashing(d)) {
+            /* 按条目数加权选表 + 随机桶 */
+            unsigned long total_used = d->ht[0].used + d->ht[1].used;
+            if (((unsigned long)random() % total_used) < d->ht[0].used) {
+                ht = &d->ht[0];
+                idx = (unsigned long)d->rehashidx +
+                      ((unsigned long)random() % (ht->size - (unsigned long)d->rehashidx));
+            } else {
+                ht = &d->ht[1];
+                idx = (unsigned long)random() & ht->sizemask;
+            }
+        } else {
+            idx = (unsigned long)random() & ht->sizemask;
+        }
+    } while (ht->table[idx] == NULL);
+
+    /* 栈数组缓存链指针：一趟数完 O(1) 取，免去第二趟指针追迹 */
+
+    /* 备选方案：水塘抽样 — 数学均匀但每节点调一次 random()，链长时比两趟慢 */
+    // dictEntry *e = NULL;
+    // int n = 0;
+    // for (dictEntry *tmp = ht->table[idx]; tmp; tmp = tmp->next, n++) {
+    //     if (random() % (n + 1) == 0)
+    //         e = tmp;
+    // }
+    // return e;
+
+    dictEntry *buf[DICT_RANDOM_BUF_LEN];
+    dictEntry *head = ht->table[idx];
+    int n = 0;
+    for (dictEntry *tmp = head; tmp; tmp = tmp->next) {
+        if (n < DICT_RANDOM_BUF_LEN)
+            buf[n] = tmp;
+        n++;
+    }
+
+    if (n <= DICT_RANDOM_BUF_LEN)
+        return buf[(unsigned long)random() % n];
+
+    /* 兜底：链长 > DICT_RANDOM_BUF_LEN（概率 ~10⁻¹⁴），两趟法 */
+    int target = (int)((unsigned long)random() % (unsigned long)n);
+    if (target < DICT_RANDOM_BUF_LEN)
+        return buf[target];
+    dictEntry *e = buf[DICT_RANDOM_BUF_LEN - 1]->next;
+    for (int i = DICT_RANDOM_BUF_LEN; i < target; i++)
+        e = e->next;
+    return e;
+}
+
+void *dictEntryGetKey(const dictEntry *de) { return de->key; }
+
+void *dictEntryGetVal(struct dict *d, const dictEntry *de) { return d->type->valGet((dictEntry *)de); }

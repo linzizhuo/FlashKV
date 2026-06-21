@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 199309L   /* clock_gettime, CLOCK_MONOTONIC */
+
 #include "kvdb.h"
 #include "dict_type.h"
 #include "ttl.h"
@@ -148,4 +150,55 @@ int kvdbPersist(kvdb *kv, const void *key)
 
     dictDelete(kv->expires, key, &h);
     return 1;
+}
+
+/* ---- 定期抽样删除过期 key ---- */
+
+#define ACTIVE_EXPIRE_LOOKUPS  20   /* 每轮采样数 */
+#define ACTIVE_EXPIRE_MAX_LOOPS 16  /* 最多轮数 */
+#define ACTIVE_EXPIRE_THRESHOLD 5   /* 过期数 < 此值退出 (LOOKUPS * 0.25) */
+#define ACTIVE_EXPIRE_TIME_LIMIT 1000 /* 单次最大耗时 (us)，避免阻塞事件循环 */
+
+static long long ustime(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+void kvdbActiveExpireCycle(kvdb *kv)
+{
+    /* 快速路径：无 TTL 的 key */
+    if (kv->expires->ht[0].used == 0 && kv->expires->ht[1].used == 0)
+        return;
+
+    time_t now = time(NULL);
+    long long start = ustime();
+
+    for (int loop = 0; loop < ACTIVE_EXPIRE_MAX_LOOPS; loop++) {
+        int expired = 0;
+
+        for (int i = 0; i < ACTIVE_EXPIRE_LOOKUPS; i++) {
+            dictEntry *de = dictGetRandomKey(kv->expires);
+            if (!de) goto done;  /* expires 被删空 */
+
+            sds key = (sds)dictEntryGetKey(de);
+            tstamp_t *when = (tstamp_t *)dictEntryGetVal(kv->expires, de);
+
+            if (now >= (time_t)(*when)) {
+                dictDelete(kv->expires, key, NULL);
+                dictDelete(kv->dict, key, NULL);
+                expired++;
+            }
+        }
+
+        /* 过期比例 < 25%：没必要继续挖 */
+        if (expired < ACTIVE_EXPIRE_THRESHOLD)
+            break;
+
+        /* 超时保护：不阻塞事件循环超过 TIME_LIMIT us */
+        if (ustime() - start > ACTIVE_EXPIRE_TIME_LIMIT)
+            break;
+    }
+done:;
 }
