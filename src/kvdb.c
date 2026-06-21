@@ -202,3 +202,16 @@ void kvdbActiveExpireCycle(kvdb *kv)
     }
 done:;
 }
+
+/* 填充率 < 10% 时缩容，对主 dict 和 expires dict 对称处理。
+ * 与 kvdbActiveExpireCycle 在同一 cron 频率被调用 (100ms, 轮转 DB)。
+ *
+ * 注意：dictShrink 内部走 dictExpand → rehash，搬迁仍由
+ * 后续读写操作的 dictRehashData(d,1) 渐进完成，不会在这里阻塞。 */
+void kvdbTryResize(kvdb *kv)
+{
+    if (dictNeedsResize(kv->dict))
+        dictShrink(kv->dict);
+    if (dictNeedsResize(kv->expires))
+        dictShrink(kv->expires);
+}

@@ -8,6 +8,9 @@
 
 static void dicthtfree(struct dict *d, struct dictht *dht);
 
+static inline int dictIsRehashing(const struct dict *d) {
+    return d->rehashidx >= 0;
+}
 
 struct dictEntry
 {
@@ -51,16 +54,59 @@ static void dicthtInit(struct dict* d, struct dictht* dht, unsigned long n)
     dht->sizemask = n - 1;
     dht->used = 0;
 }
-// rehash函数...
-// 通过逻辑设计当触发rehash时表1一定是空的
-static int dictRehash(struct dict* d)
+unsigned long dictSlots(const struct dict *d)
 {
-    if (d->rehashidx >= 0)
-        return DICT_ERROR; // 已经在 rehash
+    unsigned long s = d->ht[0].size;
+    if (d->ht[1].table) s += d->ht[1].size;
+    return s;
+}
 
-    dicthtInit(d, &d->ht[1], d->ht[0].size << 1);
+/* ---- resize 通用入口：n 是指数，目标 size = 2^n ---- */
+static unsigned long dictNextExp(unsigned long size)
+{
+    if (size <= 4) return 2;           /* 2^2 = DICT_HT_INITIAL_SIZE */
+    unsigned long s = 4, n = 2;
+    while (s < size) { s <<= 1; n++; }
+    return n;
+}
+
+int dictExpand(struct dict *d, unsigned long n)
+{
+    unsigned long size = 1ul << n;
+    if (dictIsRehashing(d) || d->ht[0].used > size)
+        return DICT_ERROR;
+    if (size == d->ht[0].size) return DICT_OK;   /* 已是目标大小 */
+    dicthtInit(d, &d->ht[1], size);
     d->rehashidx = 0;
     return DICT_OK;
+}
+
+int dictShrink(struct dict *d)
+{
+    unsigned long minimal = d->ht[0].used;
+    if (minimal < 4) minimal = 4;
+    return dictExpand(d, dictNextExp(minimal));
+}
+
+/* 填充率 < 10% 且 size > 初始值 → 值得缩容。
+ * 等价 used/size < 0.1 → size > used*10，只用乘法，不会溢出。
+ * rehash 期间不判断 — 搬迁未完成，used 分布在两表，无意义。 */
+int dictNeedsResize(const struct dict *d)
+{
+    if (dictIsRehashing(d) || d->ht[0].size <= 4)
+        return 0;
+    unsigned long used = d->ht[0].used;
+    if (d->ht[1].table) used += d->ht[1].used;
+    return (d->ht[0].size > used * 10);  /* used/size < 10% 移项，免除法截断 */
+}
+
+/* 扩容快捷方式 — 负载因子 > 1 触发。
+ * ht[0].size = 2^n → 目标 2^(n+1) */
+static int dictRehash(struct dict *d)
+{
+    unsigned long sz = d->ht[0].size, n = 0;
+    while (sz > 1) { sz >>= 1; n++; }
+    return dictExpand(d, n + 1);
 }
 /* ---- 收尾：ht[1] 顶替 ht[0] ---- */
 static void dictRehashComplete(struct dict *d)
@@ -130,9 +176,6 @@ static int dictRehashData(struct dict *d, unsigned long number)
 static unsigned long dicthtGetIdx(const struct dictht *ht, hash_t hashVal)
 {
     return hashVal & ht->sizemask;
-}
-static inline int dictIsRehashing(struct dict *d) {
-    return d->rehashidx >= 0;
 }
 /* 只插入key，作为 add 和 replace 的底层 */
 static dictEntry *dictAddRaw(struct dict *d, void *key, dictEntry **existing, void *hash)

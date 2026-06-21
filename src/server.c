@@ -265,6 +265,7 @@ static void databasesCron(struct Server *s)
 {
     /* 每次只跑一个库，轮转，16 个库 1.6 秒一圈 */
     kvdbActiveExpireCycle(s->svc.kvs[s->cron_db]);
+    kvdbTryResize(s->svc.kvs[s->cron_db]);
     if (++s->cron_db >= s->svc.dbsize)
         s->cron_db = 0;
 }
