@@ -10,41 +10,89 @@
 #include <time.h>
 
 /* ================================================================
- *  RESP 响应写入
+ *  RESP 响应写入（追加模式，支持 pipeline）
  *
- *  所有函数直接将 RESP 协议格式写入 c->wbuf，
- *  调用前应确保 c->state == CONN_STATE_WRITE 已由上层设置。
+ *  所有函数将 RESP 协议数据追加到 c->wbuf 末尾，
+ *  空间不足时自动扩容。
+ *  handleRead 循环处理多条命令，响应逐条追加，
+ *  循环结束后一次性写回客户端。
  * ================================================================ */
+
+/* 确保 wbuf 有 space 字节剩余空间，不足则 2× 扩容 */
+static int replyEnsure(Connection *c, size_t space)
+{
+    size_t needed = c->wlen + space;
+    if (needed <= c->wcap) return 1;
+
+    size_t newcap = c->wcap * 2;
+    if (newcap < needed) newcap = needed;
+    if (newcap < 256)     newcap = 256;
+
+    char *p = realloc(c->wbuf, newcap);
+    if (!p) {
+        c->wlen = 0;
+        return 0;
+    }
+    c->wbuf = p;
+    c->wcap = newcap;
+    return 1;
+}
 
 void addReplySimpleString(Connection *c, const char *str)
 {
-    int n = snprintf(c->wbuf, c->wcap, "+%s\r\n", str);
-    c->wlen = (n > 0 && (size_t)n < c->wcap) ? (size_t)n : 0;
+    size_t slen = strlen(str);
+    /* "+" + str + "\r\n" */
+    size_t total = 1 + slen + 2;
+    if (!replyEnsure(c, total)) return;
+    char *p = c->wbuf + c->wlen;
+    *p = '+';
+    memcpy(p + 1, str, slen);
+    p[1 + slen]     = '\r';
+    p[1 + slen + 1] = '\n';
+    c->wlen += total;
 }
 
 void addReplyError(Connection *c, const char *msg)
 {
-    int n = snprintf(c->wbuf, c->wcap, "-ERR %s\r\n", msg);
-    c->wlen = (n > 0 && (size_t)n < c->wcap) ? (size_t)n : 0;
+    size_t mlen = strlen(msg);
+    /* "-ERR " + msg + "\r\n" */
+    size_t total = 5 + mlen + 2;
+    if (!replyEnsure(c, total)) return;
+    char *p = c->wbuf + c->wlen;
+    memcpy(p, "-ERR ", 5);
+    memcpy(p + 5, msg, mlen);
+    p[5 + mlen]     = '\r';
+    p[5 + mlen + 1] = '\n';
+    c->wlen += total;
 }
 
 void addReplyInteger(Connection *c, long long val)
 {
-    int n = snprintf(c->wbuf, c->wcap, ":%lld\r\n", val);
-    c->wlen = (n > 0 && (size_t)n < c->wcap) ? (size_t)n : 0;
+    /* snprintf to stack, then append */
+    char tmp[32];
+    int n = snprintf(tmp, sizeof(tmp), ":%lld\r\n", val);
+    if (n <= 0) return;
+    if (!replyEnsure(c, (size_t)n)) return;
+    memcpy(c->wbuf + c->wlen, tmp, (size_t)n);
+    c->wlen += (size_t)n;
 }
 
 void addReplyBulkString(Connection *c, const char *str, size_t len)
 {
-    int hdr = snprintf(c->wbuf, c->wcap, "$%zu\r\n", len);
-    if (hdr < 0 || (size_t)hdr + len + 2 > c->wcap) {
-        c->wlen = 0;
-        return;
-    }
-    memcpy(c->wbuf + hdr, str, len);
-    c->wbuf[hdr + len]     = '\r';
-    c->wbuf[hdr + len + 1] = '\n';
-    c->wlen = (size_t)hdr + len + 2;
+    /* "$" + len + "\r\n" + str + "\r\n" */
+    char hdr[32];
+    int hlen = snprintf(hdr, sizeof(hdr), "$%zu\r\n", len);
+    if (hlen <= 0) return;
+
+    size_t total = (size_t)hlen + len + 2;
+    if (!replyEnsure(c, total)) return;
+
+    char *p = c->wbuf + c->wlen;
+    memcpy(p, hdr, (size_t)hlen);
+    memcpy(p + hlen, str, len);
+    p[hlen + len]     = '\r';
+    p[hlen + len + 1] = '\n';
+    c->wlen += total;
 }
 
 void addReplyBulkSds(Connection *c, void *s)
@@ -55,16 +103,16 @@ void addReplyBulkSds(Connection *c, void *s)
 
 void addReplyNull(Connection *c)
 {
-    if (c->wcap < 5) { c->wlen = 0; return; }
-    memcpy(c->wbuf, "$-1\r\n", 5);
-    c->wlen = 5;
+    if (!replyEnsure(c, 5)) return;
+    memcpy(c->wbuf + c->wlen, "$-1\r\n", 5);
+    c->wlen += 5;
 }
 
 void addReplyOK(Connection *c)
 {
-    if (c->wcap < 5) { c->wlen = 0; return; }
-    memcpy(c->wbuf, "+OK\r\n", 5);
-    c->wlen = 5;
+    if (!replyEnsure(c, 5)) return;
+    memcpy(c->wbuf + c->wlen, "+OK\r\n", 5);
+    c->wlen += 5;
 }
 
 /* ================================================================
