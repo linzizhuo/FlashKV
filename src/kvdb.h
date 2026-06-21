@@ -32,4 +32,7 @@ int       kvdbPersist(kvdb *kv, const void *key);  /* 1=已移除 0=无TTL */
 /* ---- 定期淘汰 ---- */
 void      kvdbActiveExpireCycle(kvdb *kv);
 
+/* ---- 定期缩容 ---- */
+void      kvdbTryResize(kvdb *kv);         /* 填充率 < 10% 时缩主 dict + expires dict */
+
 #endif

@@ -13,7 +13,7 @@
 | 模块 | 文件 | 状态 |
 |------|------|------|
 | **SDS** 动态字符串 | `src/sds.c/h` | ✅ 柔性数组 + MurmurHash2 |
-| **Dict** 哈希表 | `src/dict.c/h` | ✅ 双表渐进式 rehash + 空桶跳过 |
+| **Dict** 哈希表 | `src/dict.c/h` | ✅ 双表渐进式 rehash + 空桶跳过 + 自动缩容 |
 | **DictType** 虚表 | `src/dict_type.c/h` | ✅ key/value 生命周期解耦 |
 | **KVDB** 存储封装 | `src/kvdb.c/h` | ✅ 主 dict + expires dict + 惰性删除 (deep module) |
 | **ValObj** 值包装 | `src/val_obj.h` | ✅ STRING/INT union + 类型枚举 |
@@ -57,7 +57,7 @@
 | 优先级 | 方向 | 说明 |
 |--------|------|------|
 | 1 | **dictRehashData 空桶上限** | 防极稀疏表下 `while` 循环耗时不可控 |
-| 2 | **dictShrink 手动缩容** | 稀疏表场景给用户控制权回收 TLB/cache |
+| 2 | ~~dictShrink 手动缩容~~ | ~~稀疏表场景给用户控制权回收 TLB/cache~~ → ✅ 自动轮询缩容 (100ms cron, 填充率 <10%) |
 | 3 | **jemalloc 对比** | glibc malloc vs jemalloc 性能差异 |
 | 4 | **valgrind / ASan** | 内存泄漏 + 越界检测 |
 | 5 | **定期过期完整实现** | 补全 `kvdbActiveExpireCycle` 抽样逻辑 |
@@ -97,7 +97,7 @@ Client ──→ epoll 事件循环 ──→ RESP 解析 (零拷贝) ──→ 
 3. **addReply 追加模式** — 单次 handleRead 处理多条 pipeline 命令，一次写回
 4. **空桶跳过 rehash** — `dictRehashData` 每次搬迁保证进度，rehash 更快完成
 5. **RESP_INT → VAL_INT 快速路径** — 整数值省去 SDS 堆分配
-6. **不缩容** — 与 Redis 默认一致，避免反复扩缩容的 CPU 抖动
+6. **自动轮询缩容** — 100ms cron 检查填充率 <10% 触发，与 Redis 策略一致；搬迁仍渐进完成不阻塞
 
 ---
 
@@ -133,6 +133,7 @@ Client ──→ epoll 事件循环 ──→ RESP 解析 (零拷贝) ──→ 
 
 | 日期 | 内容 |
 |------|------|
+| 2026-06-21 | 自动轮询缩容：dictNeedsResize → kvdbTryResize → databasesCron，填充率 <10% 触发 |
 | 2026-06-21 | 服务端压测：紧凑表 vs 稀疏表对比，量化不缩容代价 |
 | 2026-06-21 | addReply 追加模式 + pipeline 响应缓冲 |
 | 2026-06-20 | kvdb 重构：收敛 dict/expires/惰性删除为 deep module |

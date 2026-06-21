@@ -54,8 +54,9 @@ void *dictValGetRef(struct dictEntry *entry); // &entry->val
 dictEntry *dictGetRandomKey(struct dict *d);
 void *dictEntryGetKey(const dictEntry *de);
 void *dictEntryGetVal(struct dict *d, const dictEntry *de);
-/* ---- rehash 控制（供测试 / 调优使用）---- */
-// int  dictRehash(struct dict *d);
-// int  dictRehashStep(struct dict *d, unsigned long number);
-// int  dictRehashData(struct dict *d, unsigned long number);
+/* ---- rehash / resize ---- */
+int  dictExpand(struct dict *d, unsigned long n);      /* 扩/缩至 2^n，n 与 dictnew 一致 */
+int  dictShrink(struct dict *d);                       /* 缩至 >= used 的最小尺寸 */
+int  dictNeedsResize(const struct dict *d);            /* size > used*10 且 size > 4 */
+unsigned long dictSlots(const struct dict *d);         /* bucket 槽位总数 */
 #endif
