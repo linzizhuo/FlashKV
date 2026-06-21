@@ -363,25 +363,378 @@ static void persistCommand(Connection *c, struct service *svc,
 }
 
 /* ================================================================
+ *  ZSET 辅助
+ * ================================================================ */
+
+/* RESP array 前缀 */
+static void addReplyArray(Connection *c, unsigned long count)
+{
+    char tmp[32];
+    int n = snprintf(tmp, sizeof(tmp), "*%lu\r\n", count);
+    if (n <= 0) return;
+    if (!replyEnsure(c, (size_t)n)) return;
+    memcpy(c->wbuf + c->wlen, tmp, (size_t)n);
+    c->wlen += (size_t)n;
+}
+
+/* ================================================================
+ *  命令：ZADD key score member
+ * ================================================================ */
+
+static void zaddCommand(Connection *c, struct service *svc,
+                        RespObj *argv, int argc)
+{
+    (void)argc;
+    if (argv[1].type != RESP_STR || argv[2].type != RESP_STR || argv[3].type != RESP_STR) {
+        addReplyError(c, "wrong type for key/score/member");
+        return;
+    }
+    sds key = respKeyToSds(&argv[1]);
+    if (!key) { addReplyError(c, "OOM"); return; }
+
+    double score;
+    {
+        char tmp[64];
+        size_t n = argv[2].len > 63 ? 63 : argv[2].len;
+        memcpy(tmp, argv[2].str, n); tmp[n] = '\0';
+        char *end;
+        score = strtod(tmp, &end);
+        if (*end != '\0') {
+            addReplyError(c, "invalid float score");
+            sdsfree(key);
+            return;
+        }
+    }
+
+    sds member = sdsnewlen(argv[3].str, argv[3].len);
+    if (!member) { sdsfree(key); addReplyError(c, "OOM"); return; }
+
+    zset *zs = kvdbGetOrCreateZset(svc->kvs[c->dbnum], key);
+    if (!zs) {
+        addReplyError(c, "WRONGTYPE key holds wrong kind of value or OOM");
+        sdsfree(key); sdsfree(member);
+        return;
+    }
+
+    /* zsetAdd 统一处理新增/更新/重复检测（O(1) dict + O(log N) skiplist） */
+    int added = zsetAdd(zs, score, member);
+    /* member 所有权已移交 zset，OOM 时内部释放 member，不要重复 sdsfree */
+
+    sdsfree(key);
+    addReplyInteger(c, added);
+}
+
+/* ================================================================
+ *  命令：ZCARD key
+ * ================================================================ */
+
+static void zcardCommand(Connection *c, struct service *svc,
+                         RespObj *argv, int argc)
+{
+    (void)argc;
+    if (argv[1].type != RESP_STR) {
+        addReplyError(c, "wrong type for key");
+        return;
+    }
+    sds key = respKeyToSds(&argv[1]);
+    if (!key) { addReplyError(c, "OOM"); return; }
+
+    int found;
+    zset *zs = kvdbGetZset(svc->kvs[c->dbnum], key, &found);
+    if (found < 0)
+        addReplyError(c, "WRONGTYPE key holds wrong kind of value");
+    else if (found == 0)
+        addReplyInteger(c, 0);
+    else
+        addReplyInteger(c, (long long)zsetLen(zs));
+    sdsfree(key);
+}
+
+/* ================================================================
+ *  命令：ZRANK key member
+ * ================================================================ */
+
+static void zrankCommand(Connection *c, struct service *svc,
+                         RespObj *argv, int argc)
+{
+    (void)argc;
+    if (argv[1].type != RESP_STR || argv[2].type != RESP_STR) {
+        addReplyError(c, "wrong type for key/member");
+        return;
+    }
+    sds key = respKeyToSds(&argv[1]);
+    if (!key) { addReplyError(c, "OOM"); return; }
+    sds member = sdsnewlen(argv[2].str, argv[2].len);
+    if (!member) { sdsfree(key); addReplyError(c, "OOM"); return; }
+
+    int found;
+    zset *zs = kvdbGetZset(svc->kvs[c->dbnum], key, &found);
+    if (found < 0) {
+        addReplyError(c, "WRONGTYPE key holds wrong kind of value");
+    } else if (found == 0) {
+        addReplyNull(c);
+    } else {
+        zskiplistNode *n = zsetFind(zs, member);       /* O(1) dict */
+        if (!n) {
+            addReplyNull(c);
+        } else {
+            unsigned long r = zsetRank(zs, member);    /* O(log N) */
+            addReplyInteger(c, (long long)(r - 1));    /* 0-based */
+        }
+    }
+    sdsfree(key);
+    sdsfree(member);
+}
+
+/* ================================================================
+ *  命令：ZSCORE key member
+ * ================================================================ */
+
+static void zscoreCommand(Connection *c, struct service *svc,
+                          RespObj *argv, int argc)
+{
+    (void)argc;
+    if (argv[1].type != RESP_STR || argv[2].type != RESP_STR) {
+        addReplyError(c, "wrong type for key/member");
+        return;
+    }
+    sds key = respKeyToSds(&argv[1]);
+    if (!key) { addReplyError(c, "OOM"); return; }
+    sds member = sdsnewlen(argv[2].str, argv[2].len);
+    if (!member) { sdsfree(key); addReplyError(c, "OOM"); return; }
+
+    int found;
+    zset *zs = kvdbGetZset(svc->kvs[c->dbnum], key, &found);
+    if (found < 0) {
+        addReplyError(c, "WRONGTYPE key holds wrong kind of value");
+    } else if (found == 0) {
+        addReplyNull(c);
+    } else {
+        zskiplistNode *n = zsetFind(zs, member);       /* O(1) dict */
+        if (!n) {
+            addReplyNull(c);
+        } else {
+            char tmp[64];
+            int len = snprintf(tmp, sizeof(tmp), "%.17g", n->score);
+            addReplyBulkString(c, tmp, (size_t)len);
+        }
+    }
+    sdsfree(key);
+    sdsfree(member);
+}
+
+/* ================================================================
+ *  命令：ZRANGE key start stop [WITHSCORES]
+ * ================================================================ */
+
+static void zrangeCommand(Connection *c, struct service *svc,
+                          RespObj *argv, int argc)
+{
+    if (argv[1].type != RESP_STR || argv[2].type != RESP_STR ||
+        argv[3].type != RESP_STR) {
+        addReplyError(c, "wrong type for key/start/stop");
+        return;
+    }
+    sds key = respKeyToSds(&argv[1]);
+    if (!key) { addReplyError(c, "OOM"); return; }
+
+    int withscores = 0;
+    if (argc > 4) {
+        if (argc != 5 || argv[4].type != RESP_STR ||
+            strncasecmp((const char *)argv[4].str, "WITHSCORES", argv[4].len) != 0 ||
+            argv[4].len != 10) {
+            addReplyError(c, "syntax error, expected WITHSCORES");
+            sdsfree(key);
+            return;
+        }
+        withscores = 1;
+    }
+
+    int ok1, ok2;
+    long long start = parseLongLong(&argv[2], &ok1);
+    long long stop  = parseLongLong(&argv[3], &ok2);
+    if (!ok1 || !ok2) {
+        addReplyError(c, "invalid start/stop");
+        sdsfree(key);
+        return;
+    }
+
+    int found;
+    zset *zs = kvdbGetZset(svc->kvs[c->dbnum], key, &found);
+    if (found < 0) {
+        addReplyError(c, "WRONGTYPE key holds wrong kind of value");
+        sdsfree(key);
+        return;
+    }
+    if (found == 0) { addReplyArray(c, 0); sdsfree(key); return; }
+
+    unsigned long len = zsetLen(zs);
+    if (len == 0) { addReplyArray(c, 0); sdsfree(key); return; }
+
+    /* 负索引转换 */
+    if (start < 0) start = (long long)len + start;
+    if (stop  < 0) stop  = (long long)len + stop;
+    if (start < 0) start = 0;
+    if (stop  < 0 || start > (long long)len - 1 || start > stop) {
+        addReplyArray(c, 0); sdsfree(key); return;
+    }
+    if (stop > (long long)len - 1) stop = (long long)len - 1;
+
+    unsigned long count = (unsigned long)(stop - start + 1);
+    addReplyArray(c, withscores ? count * 2 : count);
+
+    zskiplistNode *x = zsetByRank(zs, (unsigned long)(start + 1));
+    for (unsigned long i = 0; i < count && x; i++) {
+        addReplyBulkSds(c, x->ele);
+        if (withscores) {
+            char tmp[64];
+            int n = snprintf(tmp, sizeof(tmp), "%.17g", x->score);
+            addReplyBulkString(c, tmp, (size_t)n);
+        }
+        x = x->level[0].forward;
+    }
+    sdsfree(key);
+}
+
+/* ================================================================
+ *  命令：ZREM key member
+ * ================================================================ */
+
+static void zremCommand(Connection *c, struct service *svc,
+                        RespObj *argv, int argc)
+{
+    (void)argc;
+    if (argv[1].type != RESP_STR || argv[2].type != RESP_STR) {
+        addReplyError(c, "wrong type for key/member");
+        return;
+    }
+    sds key = respKeyToSds(&argv[1]);
+    if (!key) { addReplyError(c, "OOM"); return; }
+    sds member = sdsnewlen(argv[2].str, argv[2].len);
+    if (!member) { sdsfree(key); addReplyError(c, "OOM"); return; }
+
+    int found;
+    zset *zs = kvdbGetZset(svc->kvs[c->dbnum], key, &found);
+    if (found < 0) {
+        addReplyError(c, "WRONGTYPE key holds wrong kind of value");
+    } else if (found == 0) {
+        addReplyInteger(c, 0);
+    } else {
+        int deleted = zsetDel(zs, member);             /* O(1) dict + O(log N) skiplist */
+        addReplyInteger(c, deleted);
+    }
+    sdsfree(key);
+    sdsfree(member);
+}
+
+/* ================================================================
+ *  命令：ZCOUNT key min max
+ * ================================================================ */
+
+static void zcountCommand(Connection *c, struct service *svc,
+                          RespObj *argv, int argc)
+{
+    (void)argc;
+    if (argv[1].type != RESP_STR || argv[2].type != RESP_STR ||
+        argv[3].type != RESP_STR) {
+        addReplyError(c, "wrong type for key/min/max");
+        return;
+    }
+    sds key = respKeyToSds(&argv[1]);
+    if (!key) { addReplyError(c, "OOM"); return; }
+
+    double min, max;
+    {
+        char tmp[64]; size_t n; char *end;
+        n = argv[2].len > 63 ? 63 : argv[2].len;
+        memcpy(tmp, argv[2].str, n); tmp[n] = '\0';
+        min = strtod(tmp, &end);
+        if (*end != '\0') { addReplyError(c, "invalid min"); sdsfree(key); return; }
+        n = argv[3].len > 63 ? 63 : argv[3].len;
+        memcpy(tmp, argv[3].str, n); tmp[n] = '\0';
+        max = strtod(tmp, &end);
+        if (*end != '\0') { addReplyError(c, "invalid max"); sdsfree(key); return; }
+    }
+
+    int found;
+    zset *zs = kvdbGetZset(svc->kvs[c->dbnum], key, &found);
+    if (found < 0)
+        addReplyError(c, "WRONGTYPE key holds wrong kind of value");
+    else if (found == 0)
+        addReplyInteger(c, 0);
+    else
+        addReplyInteger(c, (long long)zsetCount(zs, min, max));
+    sdsfree(key);
+}
+
+/* ================================================================
+ *  命令：ZREMRANGEBYSCORE key min max
+ * ================================================================ */
+
+static void zremrangebyscoreCommand(Connection *c, struct service *svc,
+                                    RespObj *argv, int argc)
+{
+    (void)argc;
+    if (argv[1].type != RESP_STR || argv[2].type != RESP_STR ||
+        argv[3].type != RESP_STR) {
+        addReplyError(c, "wrong type for key/min/max");
+        return;
+    }
+    sds key = respKeyToSds(&argv[1]);
+    if (!key) { addReplyError(c, "OOM"); return; }
+
+    double min, max;
+    {
+        char tmp[64]; size_t n; char *end;
+        n = argv[2].len > 63 ? 63 : argv[2].len;
+        memcpy(tmp, argv[2].str, n); tmp[n] = '\0';
+        min = strtod(tmp, &end);
+        if (*end != '\0') { addReplyError(c, "invalid min"); sdsfree(key); return; }
+        n = argv[3].len > 63 ? 63 : argv[3].len;
+        memcpy(tmp, argv[3].str, n); tmp[n] = '\0';
+        max = strtod(tmp, &end);
+        if (*end != '\0') { addReplyError(c, "invalid max"); sdsfree(key); return; }
+    }
+
+    int found;
+    zset *zs = kvdbGetZset(svc->kvs[c->dbnum], key, &found);
+    if (found < 0)
+        addReplyError(c, "WRONGTYPE key holds wrong kind of value");
+    else if (found == 0)
+        addReplyInteger(c, 0);
+    else
+        addReplyInteger(c, (long long)zsetDelRange(zs, min, max));
+    sdsfree(key);
+}
+
+/* ================================================================
  *  命令表
  *
  *  按字典序排列，供 bsearch 二分查找。
  * ================================================================ */
 
 static Command cmd_table[] = {
-    {"DEL",       1,  delCommand},
-    {"EXISTS",    1,  existsCommand},
-    {"EXPIRE",    2,  expireCommand},
-    {"EXPIREAT",  2,  expireatCommand},
-    {"GET",       1,  getCommand},
-    {"PERSIST",   1,  persistCommand},
-    {"PEXPIRE",   2,  pexpireCommand},
-    {"PEXPIREAT", 2,  pexpireatCommand},
-    {"PING",      0,  pingCommand},
-    {"PTTL",      1,  pttlCommand},
-    {"SELECT",    1,  selectCommand},
-    {"SET",       2,  setCommand},
-    {"TTL",       1,  ttlCommand},
+    {"DEL",             1,  delCommand},
+    {"EXISTS",          1,  existsCommand},
+    {"EXPIRE",          2,  expireCommand},
+    {"EXPIREAT",        2,  expireatCommand},
+    {"GET",             1,  getCommand},
+    {"PERSIST",         1,  persistCommand},
+    {"PEXPIRE",         2,  pexpireCommand},
+    {"PEXPIREAT",       2,  pexpireatCommand},
+    {"PING",            0,  pingCommand},
+    {"PTTL",            1,  pttlCommand},
+    {"SELECT",          1,  selectCommand},
+    {"SET",             2,  setCommand},
+    {"TTL",             1,  ttlCommand},
+    {"ZADD",            3,  zaddCommand},
+    {"ZCARD",           1,  zcardCommand},
+    {"ZCOUNT",          3,  zcountCommand},
+    {"ZRANGE",         -1,  zrangeCommand},
+    {"ZRANK",           2,  zrankCommand},
+    {"ZREM",            2,  zremCommand},
+    {"ZREMRANGEBYSCORE",3,  zremrangebyscoreCommand},
+    {"ZSCORE",          2,  zscoreCommand},
 };
 
 static int cmdCompare(const void *key, const void *elem)

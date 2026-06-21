@@ -36,16 +36,14 @@ Level 0:  [H] ⇄ [10] ⇄ [18] ⇄ [30] ⇄ [42] ⇄ [55] ⇄ [66] ⇄ [78] ⇄
 #define ZSKIPLIST_MAXLEVEL 32   // 最大层数
 #define ZSKIPLIST_P      0.25   // 晋升概率
 
-typedef struct zskiplistLevel {
-    struct zskiplistNode *forward;  // 本层下一节点
-    unsigned long span;             // 本层跨过的节点数
-} zskiplistLevel;
-
 typedef struct zskiplistNode {
     double score;
-    char *ele;                      // SDS 字符串
+    sds ele;                        // SDS 动态字符串
     struct zskiplistNode *backward; // 后退指针，仅 L0 有效
-    zskiplistLevel level[];         // 柔性数组，高度由掷硬币决定
+    struct zskiplistLevel {         // 嵌套 struct，非独立 typedef
+        struct zskiplistNode *forward;  // 本层下一节点
+        unsigned long span;             // 本层跨过的节点数
+    } level[];                      // 柔性数组，高度由掷硬币决定
 } zskiplistNode;
 
 typedef struct zskiplist {
@@ -63,9 +61,9 @@ typedef struct zskiplist {
 
 拆分为独立索引节点也省不了内存：高度 3 的节点数组写法 72 字节，拆分后 3 次 malloc 结构体总和 80 字节 + malloc 元数据，反而更胖。且拆分后索引节点必须存 score 副本，否则搜索时仍要 down 到底。
 
-### 3.2 为什么 forward 和 span 捆成 struct
+### 3.2 为什么 forward 和 span 捆成嵌套 struct
 
-C 只允许一个柔性数组成员。`forward` 和 `span` 是每层的绑定信息——改 forward 必然改 span——捆成一个 struct 既是 C 语言限制，也是语义内聚。
+C 只允许一个柔性数组。`forward` 和 `span` 是每层的绑定信息——改 forward 必然改 span——捆成 `zskiplistLevel` 匿名嵌套 struct 既是 C 语言限制，也是语义内聚（对外不暴露独立类型名）。
 
 ### 3.3 span 为什么必要
 
@@ -152,18 +150,18 @@ rank = 0
 
 | 函数 | 说明 |
 |------|------|
-| `zslCreate()` | 创建空跳表 |
-| `zslFree(zsl)` | 释放跳表及其所有节点 |
-| `zslInsert(zsl, score, ele)` | 插入节点。score 相同按 ele 字典序排；ele 已存在则更新 score |
-| `zslDelete(zsl, score, ele)` | 删除节点 |
-| `zslRank(zsl, score, ele)` | 返回 1-based rank，未找到返回 0 |
-| `zslElementByRank(zsl, rank)` | 按 rank 取节点 |
-| `zslCount(zsl, min, max)` | score 在 [min, max] 区间内的节点数 |
-| `zslDeleteRange(zsl, min, max)` | 删除 score 范围内的所有节点，返回删除个数 |
+| `zslnew()` | 创建空跳表 |
+| `zslfree(zsl)` | 释放跳表及其所有节点 |
+| `zslinsert(zsl, score, ele)` | 插入节点，接管 sds 所有权。仅检测 (score,ele) 完全重复；ele 级唯一性由调用方保证 |
+| `zsldel(zsl, score, ele)` | 精确删除 (score, ele) 匹配的节点 |
+| `zslrank(zsl, score, ele)` | 返回 1-based rank，未找到返回 0 |
+| `zslbyrank(zsl, rank)` | 按 1-based rank 取节点 |
+| `zslcount(zsl, min, max)` | score 在 [min, max] 区间内的节点数 |
+| `zsldelrange(zsl, min, max)` | 删除 score 范围内的所有节点，返回删除个数 |
 
 ### 命名规则
 
-参考 SDS 命名：`{模块前缀小写}{操作名PascalCase}`。前缀 `zsl`，如 `zslInsert`、`zslRank`、`zslDeleteRange`。
+前缀小写 `zsl` + 操作名（小写缩写优先，与项目 `sdsfree`/`dictfind` 风格一致）：`zslinsert`、`zslrank`、`zsldelrange` 等。
 
 ---
 
@@ -184,3 +182,4 @@ rank = 0
 
 - Redis 7.x `t_zset.c` — `zslInsert`/`zslDelete`/`zslGetRank` 原始实现
 - [PLAN.md](../PLAN.md) — 项目整体架构与跳表选择理由
+- [src/zset.h](../src/zset.h) — 上层 zset 抽象（dict + skiplist 双索引），负责 member 级唯一性和 O(1) 查找
