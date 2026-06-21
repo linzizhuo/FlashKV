@@ -108,11 +108,10 @@ static void connFree(Connection *c) {
 
 /* ---------- 事件处理 ---------- */
 
-/* 读取 → 解析 RESP → 执行命令 → 写回响应
+/* 读取 → 解析 RESP → 执行命令 → 追加响应
  *
  * 循环消费缓冲区中的完整命令（支持 pipeline）。
- * 注意：当前 wbuf 只存最后一条响应，多条命令时仅最后一条被发回。
- *       完整 pipeline 支持需要多响应缓冲（后续迭代）。
+ * 响应通过 addReply* 追加到 wbuf 末尾，循环结束后一次性写回。
  */
 static void handleRead(Connection *c) {
     /* 追加模式读：数据拼到 rbuf 尾部 */

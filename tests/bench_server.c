@@ -143,15 +143,14 @@ static int writeAll(int fd, const char *buf, size_t len) {
 }
 
 /*
- * 读取单行 RESP 响应。
- * 所有 benchmark 响应均为单行 (+OK\r\n, :N\r\n, $-1\r\n)，
- * 只有 GET integer 也返回 :N\r\n。
- * 读到 \r\n 即返回。
+ * 读取单行 RESP 响应（逐字节读，不消费后续数据）。
+ * 所有 benchmark 响应均为单行 (+OK\r\n, :N\r\n, $-1\r\n)。
  */
 static int readResponse(int fd, char *buf, size_t cap) {
     size_t n = 0;
     while (n + 1 < cap) {
-        ssize_t r = read(fd, buf + n, cap - n);
+        char c;
+        ssize_t r = read(fd, &c, 1);
         if (r == 0) {
             fprintf(stderr, "Connection closed by server\n");
             return -1;
@@ -161,10 +160,11 @@ static int readResponse(int fd, char *buf, size_t cap) {
             perror("read");
             return -1;
         }
-        n += (size_t)r;
-        buf[n] = '\0';
-        if (n >= 2 && buf[n - 2] == '\r' && buf[n - 1] == '\n')
+        buf[n++] = c;
+        if (n >= 2 && buf[n - 2] == '\r' && buf[n - 1] == '\n') {
+            buf[n] = '\0';
             return (int)n;
+        }
     }
     fprintf(stderr, "Response too large (cap=%zu)\n", cap);
     return -1;
@@ -306,9 +306,9 @@ static void doDelete(int fd, int n, int keyStart, const char *label,
 /* ---------- GET benchmark ---------- */
 static void doBenchGet(int fd, int n, int keyStart, int keyspace,
                        unsigned int seed, const char *label,
-                       int warmup, int progInterval) {
-    printf("── %s: GET benchmark (%d ops, keyspace=%d, keyStart=%d) ──\n",
-           label, n, keyspace, keyStart);
+                       int warmup, int progInterval, int pipeline) {
+    printf("── %s: GET benchmark (%d ops, keyspace=%d, keyStart=%d, pipeline=%d) ──\n",
+           label, n, keyspace, keyStart, pipeline);
     fflush(stdout);
 
     char cmdbuf[256], rspbuf[128];
@@ -330,39 +330,68 @@ static void doBenchGet(int fd, int n, int keyStart, int keyspace,
     }
 
     /* Timed benchmark */
-    Latency lat     = latNew();
+    Latency lat      = latNew();
     long long tStart = nowNs();
-    long long tLast  = tStart;
+    int lastReport   = 0;
     unsigned int rs  = seed;
 
-    for (int i = 0; i < n; i++) {
-        int keynum = keyStart + (int)(lcgRand(&rs) % (unsigned int)keyspace);
-        int cmdlen = formatGet(cmdbuf, sizeof(cmdbuf), keynum);
+    for (int i = 0; i < n; i += pipeline) {
+        int batch = (n - i < pipeline) ? (n - i) : pipeline;
 
-        long long dt = roundTrip(fd, cmdbuf, cmdlen, rspbuf, sizeof(rspbuf));
-        if (dt < 0) {
-            fprintf(stderr, "Error at GET iter %d (key %d)\n", i, keynum);
-            exit(1);
+        /* 预计算这批的 key */
+        int keys[256];
+        for (int j = 0; j < batch; j++)
+            keys[j] = keyStart + (int)(lcgRand(&rs) % (unsigned int)keyspace);
+
+        /* 一口气发送 batch 条命令 */
+        for (int j = 0; j < batch; j++) {
+            int cmdlen = formatGet(cmdbuf, sizeof(cmdbuf), keys[j]);
+            if (writeAll(fd, cmdbuf, (size_t)cmdlen) != 0) {
+                fprintf(stderr, "Error at GET iter %d (key %d)\n", i + j, keys[j]);
+                exit(1);
+            }
         }
-        latRecord(&lat, dt);
 
-        if ((i + 1) % progInterval == 0) {
+        /* 一口气读回 batch 条响应（读到足够 \r\n 为止） */
+        long long t1 = nowNs();
+        char batchBuf[8192];
+        int bufOff = 0;
+        int gotResp = 0;
+        while (gotResp < batch && bufOff < (int)sizeof(batchBuf) - 1) {
+            ssize_t r = read(fd, batchBuf + bufOff,
+                             sizeof(batchBuf) - (size_t)bufOff - 1);
+            if (r == 0) { fprintf(stderr, "Connection closed at GET batch %d\n", i); exit(1); }
+            if (r == -1) {
+                if (errno == EAGAIN || errno == EINTR) continue;
+                perror("read"); exit(1);
+            }
+            bufOff += (int)r;
+            batchBuf[bufOff] = '\0';
+            gotResp = 0;
+            for (int k = 0; k < bufOff - 1; k++)
+                if (batchBuf[k] == '\r' && batchBuf[k + 1] == '\n') gotResp++;
+        }
+        long long batchNs = nowNs() - t1;
+        long long perOp   = batchNs / batch;
+        for (int j = 0; j < batch; j++) latRecord(&lat, perOp);
+
+        int done = i + batch;
+        if (done - lastReport >= progInterval) {
             long long now = nowNs();
-            double rate = (double)progInterval / ((now - tLast) / 1e9);
-            long long elapsed = (now - tStart) / 1000000;
-            printf("  %d/%d  (%.0f ops/s,  elapsed %lld ms)\n",
-                   i + 1, n, rate, elapsed);
+            double elapsedSec = (now - tStart) / 1e9;
+            printf("  %d/%d  (%.0f ops/s,  elapsed %.0f ms)\n",
+                   done, n, done / elapsedSec, elapsedSec * 1000);
             fflush(stdout);
-            tLast = now;
+            lastReport = done;
         }
     }
 
     long long totalNs = nowNs() - tStart;
     double rate = n / (totalNs / 1e9);
 
-    printf("\n  GET 吞吐量: %.0f ops/s  (%lld ms total)\n",
-           rate, totalNs / 1000000);
-    printf("  延迟分布 (网络 round-trip):\n");
+    printf("\n  GET 吞吐量: %.0f ops/s  (%lld ms total, pipeline=%d)\n",
+           rate, totalNs / 1000000, pipeline);
+    printf("  延迟分布 (单次摊销, 网络 round-trip ÷ %d):\n", pipeline);
     latReport(&lat, "GET");
     printf("\n");
     fflush(stdout);
@@ -371,9 +400,9 @@ static void doBenchGet(int fd, int n, int keyStart, int keyspace,
 /* ---------- SET overwrite benchmark ---------- */
 static void doBenchSet(int fd, int n, int keyStart, int keyspace,
                        unsigned int seed, const char *label,
-                       int warmup, int progInterval) {
-    printf("── %s: SET overwrite benchmark (%d ops, keyspace=%d, keyStart=%d) ──\n",
-           label, n, keyspace, keyStart);
+                       int warmup, int progInterval, int pipeline) {
+    printf("── %s: SET overwrite benchmark (%d ops, keyspace=%d, keyStart=%d, pipeline=%d) ──\n",
+           label, n, keyspace, keyStart, pipeline);
     fflush(stdout);
 
     char cmdbuf[256], rspbuf[128];
@@ -397,37 +426,66 @@ static void doBenchSet(int fd, int n, int keyStart, int keyspace,
     /* Timed benchmark */
     Latency lat      = latNew();
     long long tStart = nowNs();
-    long long tLast  = tStart;
+    int lastReport   = 0;
     unsigned int rs  = seed;
 
-    for (int i = 0; i < n; i++) {
-        int keynum = keyStart + (int)(lcgRand(&rs) % (unsigned int)keyspace);
-        int cmdlen = formatSet(cmdbuf, sizeof(cmdbuf), keynum);
+    for (int i = 0; i < n; i += pipeline) {
+        int batch = (n - i < pipeline) ? (n - i) : pipeline;
 
-        long long dt = roundTrip(fd, cmdbuf, cmdlen, rspbuf, sizeof(rspbuf));
-        if (dt < 0) {
-            fprintf(stderr, "Error at SET iter %d (key %d)\n", i, keynum);
-            exit(1);
+        /* 预计算这批的 key */
+        int keys[256];
+        for (int j = 0; j < batch; j++)
+            keys[j] = keyStart + (int)(lcgRand(&rs) % (unsigned int)keyspace);
+
+        /* 一口气发送 batch 条命令 */
+        for (int j = 0; j < batch; j++) {
+            int cmdlen = formatSet(cmdbuf, sizeof(cmdbuf), keys[j]);
+            if (writeAll(fd, cmdbuf, (size_t)cmdlen) != 0) {
+                fprintf(stderr, "Error at SET iter %d (key %d)\n", i + j, keys[j]);
+                exit(1);
+            }
         }
-        latRecord(&lat, dt);
 
-        if ((i + 1) % progInterval == 0) {
+        /* 一口气读回 batch 条响应 */
+        long long t1 = nowNs();
+        char batchBuf[8192];
+        int bufOff = 0;
+        int gotResp = 0;
+        while (gotResp < batch && bufOff < (int)sizeof(batchBuf) - 1) {
+            ssize_t r = read(fd, batchBuf + bufOff,
+                             sizeof(batchBuf) - (size_t)bufOff - 1);
+            if (r == 0) { fprintf(stderr, "Connection closed at SET batch %d\n", i); exit(1); }
+            if (r == -1) {
+                if (errno == EAGAIN || errno == EINTR) continue;
+                perror("read"); exit(1);
+            }
+            bufOff += (int)r;
+            batchBuf[bufOff] = '\0';
+            gotResp = 0;
+            for (int k = 0; k < bufOff - 1; k++)
+                if (batchBuf[k] == '\r' && batchBuf[k + 1] == '\n') gotResp++;
+        }
+        long long batchNs = nowNs() - t1;
+        long long perOp   = batchNs / batch;
+        for (int j = 0; j < batch; j++) latRecord(&lat, perOp);
+
+        int done = i + batch;
+        if (done - lastReport >= progInterval) {
             long long now = nowNs();
-            double rate = (double)progInterval / ((now - tLast) / 1e9);
-            long long elapsed = (now - tStart) / 1000000;
-            printf("  %d/%d  (%.0f ops/s,  elapsed %lld ms)\n",
-                   i + 1, n, rate, elapsed);
+            double elapsedSec = (now - tStart) / 1e9;
+            printf("  %d/%d  (%.0f ops/s,  elapsed %.0f ms)\n",
+                   done, n, done / elapsedSec, elapsedSec * 1000);
             fflush(stdout);
-            tLast = now;
+            lastReport = done;
         }
     }
 
     long long totalNs = nowNs() - tStart;
     double rate = n / (totalNs / 1e9);
 
-    printf("\n  SET overwrite 吞吐量: %.0f ops/s  (%lld ms total)\n",
-           rate, totalNs / 1000000);
-    printf("  延迟分布 (网络 round-trip):\n");
+    printf("\n  SET overwrite 吞吐量: %.0f ops/s  (%lld ms total, pipeline=%d)\n",
+           rate, totalNs / 1000000, pipeline);
+    printf("  延迟分布 (单次摊销, 网络 round-trip ÷ %d):\n", pipeline);
     latReport(&lat, "SET");
     printf("\n");
     fflush(stdout);
@@ -457,6 +515,7 @@ static void usage(const char *prog) {
         "  --seed S            Random seed (default: 42)\n"
         "  --warmup N          Untimed warmup iterations (default: 200000)\n"
         "  --prog-interval N   Progress report every N ops (default: 100000)\n"
+        "  --pipeline P        Pipeline depth: send P cmds before reading (default: 1)\n"
         "\n"
         "Key naming: k:0000001, k:0000002, ... (fixed 9-byte keys)\n"
         "Only one of --populate/--delete/--get/--set is executed per invocation.\n"
@@ -464,8 +523,9 @@ static void usage(const char *prog) {
         "Examples:\n"
         "  %s --populate 1000000 --label \"A-populate\"\n"
         "  %s --get 1000000 --keyspace 1000000 --key-start 1 --label \"A-GET\"\n"
+        "  %s --get 1000000 --pipeline 100 --label \"pipeline-test\"\n"
         "  %s --delete 1000000 --key-start 1 --label \"B-delete\"\n",
-        prog, prog, prog, prog);
+        prog, prog, prog, prog, prog);
 }
 
 int main(int argc, char **argv) {
@@ -481,6 +541,7 @@ int main(int argc, char **argv) {
     int         seed       = 42;
     int         warmup     = 200000;
     int         progInterval = 100000;
+    int         pipeline   = 1;
 
     /* 解析参数 */
     for (int i = 1; i < argc; i++) {
@@ -508,6 +569,10 @@ int main(int argc, char **argv) {
             warmup = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--prog-interval") && i + 1 < argc) {
             progInterval = atoi(argv[++i]);
+        } else if (!strcmp(argv[i], "--pipeline") && i + 1 < argc) {
+            pipeline = atoi(argv[++i]);
+            if (pipeline < 1) pipeline = 1;
+            if (pipeline > 256) pipeline = 256;
         } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
             usage(argv[0]);
             return 0;
@@ -550,10 +615,10 @@ int main(int argc, char **argv) {
         doDelete(fd, deleteN, keyStart, label, progInterval);
     } else if (getN) {
         doBenchGet(fd, getN, keyStart, keyspace,
-                   (unsigned int)seed, label, warmup, progInterval);
+                   (unsigned int)seed, label, warmup, progInterval, pipeline);
     } else if (setN) {
         doBenchSet(fd, setN, keyStart, keyspace,
-                   (unsigned int)seed, label, warmup, progInterval);
+                   (unsigned int)seed, label, warmup, progInterval, pipeline);
     }
 
     close(fd);
