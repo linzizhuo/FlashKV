@@ -164,3 +164,8 @@ unsigned long zsetLen(zset *zs)
 {
     return zs->zsl->length;
 }
+
+zskiplistNode **zsetRange(zset *zs, double min, double max, unsigned long *count)
+{
+    return zslrange(zs->zsl, min, max, count);
+}

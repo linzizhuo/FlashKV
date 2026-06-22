@@ -2,6 +2,10 @@
 
 #include "zskiplist.h"
 
+/* score 边界类型（zslRankScore 用） */
+#define ZSL_GE 0  /* >= */
+#define ZSL_GT 1  /* >  */
+
 /* ======================== 内部辅助 ======================== */
 
 /* 掷硬币决定新节点高度，p=0.25，最高 32 层 */
@@ -27,12 +31,16 @@ static zskiplistNode *zslCreateNode(int level, double score, sds ele)
 }
 
 /*
- * 搜索：找到 target (score, ele) 的前驱节点。
+ * 搜索前驱节点。
  *
- *   - mode = ZSL_SEARCH_LT : 停在 predecessor（insert/delete 用）
+ *   - ele  = NULL  → 纯 score 搜索（区间查询用），遇到等分即停
+ *   - ele != NULL  → (score, ele) 字典序搜索（insert/del/rank 用）
+ *   - update = NULL → 不记录各层前驱
+ *   - rank   = NULL → 不记录各层累计跨度
+ *   - mode = ZSL_SEARCH_LT : 停在 predecessor 之前（insert/delete/range 用）
  *   - mode = ZSL_SEARCH_LE : 可越过等值节点（rank 用）
  *
- * 结果写入 update[0..zsl->level-1]。若 rank 非 NULL，则填入各层累计跨度。
+ * 结果写入 update[0..zsl->level-1]（非 NULL 时），rank 同理。
  */
 typedef enum { ZSL_SEARCH_LT, ZSL_SEARCH_LE } zslSearchMode;
 
@@ -50,7 +58,7 @@ static void zslSearch(zskiplist *zsl, double score, sds ele,
             if (n->score < score) {
                 if (rank) rank[i] += x->level[i].span;
                 x = n;
-            } else if (n->score == score &&
+            } else if (ele && n->score == score &&
                        sdsCompare(n->ele, ele) <= cmp_op) {
                 if (rank) rank[i] += x->level[i].span;
                 x = n;
@@ -58,8 +66,30 @@ static void zslSearch(zskiplist *zsl, double score, sds ele,
                 break;
             }
         }
-        update[i] = x;
+        if (update) update[i] = x;
     }
+}
+
+/*
+ * 返回第一个越过边界的节点排名（1-based），无则返回 length+1。
+ *   exclusive=0 → 第一个 score >= target 的排名
+ *   exclusive=1 → 第一个 score >  target 的排名
+ *   node != NULL → 同时写回该节点指针
+ */
+static unsigned long zslRankScore(zskiplist *zsl, double target, int exclusive,
+                                  zskiplistNode **node)
+{
+    zskiplistNode *x = zsl->header;
+    unsigned long rank = 0;
+    for (int i = zsl->level - 1; i >= 0; i--)
+        while (x->level[i].forward &&
+               (x->level[i].forward->score < target ||
+                (!exclusive && x->level[i].forward->score == target))) {
+            rank += x->level[i].span;
+            x = x->level[i].forward;
+        }
+    if (node) *node = x->level[0].forward;
+    return rank + 1;
 }
 
 /* 内部函数：从跳表中摘除节点 x，update[] 需已经过搜索 */
@@ -253,25 +283,10 @@ zskiplistNode *zslbyrank(zskiplist *zsl, unsigned long rank)
 unsigned long zslcount(zskiplist *zsl, double min, double max)
 {
     if (!zsl || min > max) return 0;
-
-    /* 找到第一个 score >= min 的节点 */
-    zskiplistNode *x = zsl->header;
-    for (int i = zsl->level - 1; i >= 0; i--) {
-        while (x->level[i].forward && x->level[i].forward->score < min) {
-            x = x->level[i].forward;
-        }
-    }
-
-    x = x->level[0].forward;
-    if (!x || x->score > max) return 0;
-
-    unsigned long count = 0;
-    while (x && x->score <= max) {
-        count++;
-        x = x->level[0].forward;
-    }
-
-    return count;
+    unsigned long r1 = zslRankScore(zsl, min, ZSL_GE, NULL);
+    if (r1 > zsl->length) return 0;
+    unsigned long r2 = zslRankScore(zsl, max, ZSL_GT, NULL);
+    return r2 - r1;
 }
 
 unsigned long zsldelrange(zskiplist *zsl, double min, double max)
@@ -279,18 +294,10 @@ unsigned long zsldelrange(zskiplist *zsl, double min, double max)
     if (!zsl || min > max) return 0;
 
     zskiplistNode *update[ZSKIPLIST_MAXLEVEL];
-    zskiplistNode *x;
     unsigned long removed = 0;
 
-    x = zsl->header;
-    for (int i = zsl->level - 1; i >= 0; i--) {
-        while (x->level[i].forward && x->level[i].forward->score < min) {
-            x = x->level[i].forward;
-        }
-        update[i] = x;
-    }
-
-    x = x->level[0].forward;
+    zslSearch(zsl, min, NULL, update, NULL, ZSL_SEARCH_LT);
+    zskiplistNode *x = update[0]->level[0].forward;
 
     while (x && x->score <= max) {
         zskiplistNode *next = x->level[0].forward;
@@ -302,4 +309,31 @@ unsigned long zsldelrange(zskiplist *zsl, double min, double max)
     }
 
     return removed;
+}
+
+zskiplistNode **zslrange(zskiplist *zsl, double min, double max,
+                       unsigned long *count)
+{
+    if (!zsl || min > max || !count) return NULL;
+
+    zskiplistNode *first;
+    unsigned long r1 = zslRankScore(zsl, min, ZSL_GE, &first);
+    if (!first || first->score > max) {
+        *count = 0;
+        return NULL;
+    }
+
+    unsigned long r2 = zslRankScore(zsl, max, ZSL_GT, NULL);
+    *count = r2 - r1;
+
+    zskiplistNode **arr = malloc(*count * sizeof(zskiplistNode *));
+    if (!arr) { *count = 0; return NULL; }
+
+    zskiplistNode *x = first;
+    for (unsigned long i = 0; i < *count; i++) {
+        arr[i] = x;
+        x = x->level[0].forward;
+    }
+
+    return arr;
 }

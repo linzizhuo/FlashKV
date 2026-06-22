@@ -525,6 +525,7 @@ static void zscoreCommand(Connection *c, struct service *svc,
 
 /* ================================================================
  *  命令：ZRANGE key start stop [WITHSCORES]
+ *        ZRANGE key min max BYSCORE [WITHSCORES]
  * ================================================================ */
 
 static void zrangeCommand(Connection *c, struct service *svc,
@@ -538,25 +539,27 @@ static void zrangeCommand(Connection *c, struct service *svc,
     sds key = respKeyToSds(&argv[1]);
     if (!key) { addReplyError(c, "OOM"); return; }
 
+    /* 检测 BYSCORE 模式 */
+    int byscore = 0;
     int withscores = 0;
-    if (argc > 4) {
-        if (argc != 5 || argv[4].type != RESP_STR ||
-            strncasecmp((const char *)argv[4].str, "WITHSCORES", argv[4].len) != 0 ||
-            argv[4].len != 10) {
+    int argp = 4;
+
+    if (argc > 4 && argv[4].type == RESP_STR &&
+        strncasecmp((const char *)argv[4].str, "BYSCORE", argv[4].len) == 0 &&
+        argv[4].len == 7) {
+        byscore = 1;
+        argp++;
+    }
+
+    if (argc > argp) {
+        if (argv[argp].type != RESP_STR ||
+            strncasecmp((const char *)argv[argp].str, "WITHSCORES", argv[argp].len) != 0 ||
+            argv[argp].len != 10) {
             addReplyError(c, "syntax error, expected WITHSCORES");
             sdsfree(key);
             return;
         }
         withscores = 1;
-    }
-
-    int ok1, ok2;
-    long long start = parseLongLong(&argv[2], &ok1);
-    long long stop  = parseLongLong(&argv[3], &ok2);
-    if (!ok1 || !ok2) {
-        addReplyError(c, "invalid start/stop");
-        sdsfree(key);
-        return;
     }
 
     int found;
@@ -567,6 +570,47 @@ static void zrangeCommand(Connection *c, struct service *svc,
         return;
     }
     if (found == 0) { addReplyArray(c, 0); sdsfree(key); return; }
+
+    if (byscore) {
+        /* ---- BYSCORE 模式 ---- */
+        double min, max;
+        {
+            char tmp[64]; size_t n; char *end;
+            n = argv[2].len > 63 ? 63 : argv[2].len;
+            memcpy(tmp, argv[2].str, n); tmp[n] = '\0';
+            min = strtod(tmp, &end);
+            if (*end != '\0') { addReplyError(c, "invalid min"); sdsfree(key); return; }
+            n = argv[3].len > 63 ? 63 : argv[3].len;
+            memcpy(tmp, argv[3].str, n); tmp[n] = '\0';
+            max = strtod(tmp, &end);
+            if (*end != '\0') { addReplyError(c, "invalid max"); sdsfree(key); return; }
+        }
+
+        unsigned long count;
+        zskiplistNode **nodes = zsetRange(zs, min, max, &count);
+        addReplyArray(c, withscores ? count * 2 : count);
+        for (unsigned long i = 0; i < count; i++) {
+            addReplyBulkSds(c, nodes[i]->ele);
+            if (withscores) {
+                char tmp[64];
+                int n = snprintf(tmp, sizeof(tmp), "%.17g", nodes[i]->score);
+                addReplyBulkString(c, tmp, (size_t)n);
+            }
+        }
+        free(nodes);
+        sdsfree(key);
+        return;
+    }
+
+    /* ---- 排名模式（原有逻辑） ---- */
+    int ok1, ok2;
+    long long start = parseLongLong(&argv[2], &ok1);
+    long long stop  = parseLongLong(&argv[3], &ok2);
+    if (!ok1 || !ok2) {
+        addReplyError(c, "invalid start/stop");
+        sdsfree(key);
+        return;
+    }
 
     unsigned long len = zsetLen(zs);
     if (len == 0) { addReplyArray(c, 0); sdsfree(key); return; }

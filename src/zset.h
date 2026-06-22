@@ -34,5 +34,8 @@ zskiplistNode *zsetByRank(zset *zs, unsigned long rank);       /* 1-based */
 unsigned long zsetCount(zset *zs, double min, double max);     /* score 区间计数 */
 unsigned long zsetDelRange(zset *zs, double min, double max);  /* score 区间删除，返回删除数 */
 unsigned long zsetLen(zset *zs);                               /* 基数 = zsl->length */
+zskiplistNode **zsetRange(zset *zs, double min, double max,
+                       unsigned long *count);                /* score 区间返回节点数组，调用方 free() */
+
 
 #endif

@@ -44,4 +44,7 @@ zskiplistNode *zslbyrank(zskiplist *zsl, unsigned long rank);
 unsigned long zslcount(zskiplist *zsl, double min, double max);
 unsigned long zsldelrange(zskiplist *zsl, double min, double max);
 
+zskiplistNode **zslrange(zskiplist *zsl, double min, double max,
+                         unsigned long *count);
+
 #endif
