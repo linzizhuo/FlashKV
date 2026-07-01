@@ -39,21 +39,24 @@
 
 ### 为什么 P=16 GET 输给 Redis？
 
-**根因：事件循环写回被额外延迟一轮 epoll_wait。**
+**根因：pipeline batch 被额外拆成了两次事件循环，多了一组 syscall。**
 
-FlashKV 的原始事件循环在 `handleRead` 处理完 pipeline 命令后，将回复积压在 `wbuf` 中，设置 `state=WRITE`，但写操作要等到**下一轮** `epoll_wait` 返回 `EPOLLOUT` 才执行。一次 pipeline batch 实际经历了：
+FlashKV 原始的事件循环流程：
 
 ```
-epoll_wait → EPOLLIN → handleRead → epoll_ctl(MOD, R|W) → epoll_wait → EPOLLOUT → handleWrite
+epoll_wait → EPOLLIN → handleRead    → epoll_ctl(MOD, R|W) → epoll_wait → EPOLLOUT → handleWrite
+                                                                                   → epoll_ctl(MOD, R)
 ```
 
-而 Redis 在事件循环末尾有 `beforeSleep` 钩子，读完后**立即**处理积压写，不经过第二轮 epoll_wait。
+每个 batch 额外产生三条 syscall：`epoll_ctl(MOD)` + `epoll_wait` + `epoll_ctl(MOD)`。
 
-**修复**：在 `handleRead` 返回后立即尝试 `handleWrite`（若 `state=WRITE`），省掉 epoll 往返。代码见 [server.c:344-350](../src/server.c#L344-L350)。
+虽然 `epoll_wait(100ms)` 在 socket 可写时立刻返回（不会真的等 100ms），但 syscall 本身是有成本的——在云服务器上单次 batch 多约 10~20μs。P=16 场景下每秒约 40,000 个 batch，累积起来就是 40,000 × 15μs ≈ 0.6 秒的系统调用开销。
 
-> 这个优化思路类似 Redis 的 `beforeSleep` —— 在事件循环内部做完读-处理-写三个动作，不等内核再调度一轮。
+Redis 在事件循环末尾有 `beforeSleep` 钩子，读完立即写回，不额外切事件：**一个 batch 只有 1 组 syscall，FlashKV 有 2 组。**
 
-P=16 是这个问题的重灾区：批次数量多（~40k 批/秒），每批多一次 epoll 往返的开销被放大。P=64 批次少（~22k 批/秒），开销被摊薄，所以 P=64 数据依然领先。
+**修复**：在 `handleRead` 返回后若 `state=WRITE`，立即调用 `handleWrite`，省掉写回那组 syscall（[server.c:344-350](../src/server.c#L344-L350)）。思路类似 Redis 的 `beforeSleep`。
+
+P=16 是这个问题的重灾区：批次数量多（~40k 批/秒），syscall 开销被放大。P=64 批次少（~22k 批/秒），开销被摊薄，所以 P=64 数据无明显影响。
 
 ### 为什么 P=64 SET 优势最大？
 
