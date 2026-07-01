@@ -118,7 +118,7 @@ static void dictRehashComplete(struct dict *d)
     d->ht[1].size = d->ht[1].sizemask = d->ht[1].used = 0;
 }
 /* 以桶槽为单位搬迁 —— 搬 number 个桶槽（含空桶），适合批量预加载 */
-static int dictRehashStep(struct dict *d, unsigned long number)
+static int __attribute__((unused)) dictRehashStep(struct dict *d, unsigned long number)
 {
     unsigned long begin = d->rehashidx, end = MIN(d->ht[0].size, (unsigned long)d->rehashidx + number);
     for (unsigned long idx = begin; idx < end; idx++)

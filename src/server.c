@@ -19,7 +19,7 @@
 
 #define MAX_EVENTS 1024
 #define BUF_SIZE 4096
-#define MAX_PIPELINE_BATCH 16  /* handleRead 单轮最多处理命令数，平衡吞吐与延迟 */
+#define MAX_PIPELINE_BATCH 64  /* handleRead 单轮最多处理命令数，~1ms 调度粒度 */
 
 static long long mstime(void);
 

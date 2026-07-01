@@ -45,13 +45,20 @@ RESP_SRC = src/resp.c
 test_resp: tests/test_resp.c $(RESP_SRC)
 	$(CC) $(CFLAGS) -I src -o $@ $^
 
+# ---------- ZSet / Skiplist ----------
+
+ZSET_SRC = src/zset.c src/zskiplist.c
+
+test_zset: tests/test_zset.c $(ZSET_SRC) $(DICT_SRC) $(SDS_SRC)
+	$(CC) $(CFLAGS) -I src -o $@ tests/test_zset.c $(ZSET_SRC) $(DICT_SRC) $(SDS_SRC)
+
 # ---------- 全部 ----------
 
 .PHONY: all
-all: test_resp test_sds test_dict flashkv
+all: test_resp test_sds test_dict test_zset flashkv
 	@echo "======= 全部构建完成 ======="
 
 clean:
-	rm -f test_resp test_sds test_dict flashkv bench_dict bench_server
+	rm -f test_resp test_sds test_dict test_zset flashkv bench_dict bench_server
 
 .PHONY: clean

@@ -84,7 +84,7 @@ static unsigned long zslRankScore(zskiplist *zsl, double target, int exclusive,
     for (int i = zsl->level - 1; i >= 0; i--)
         while (x->level[i].forward &&
                (x->level[i].forward->score < target ||
-                (!exclusive && x->level[i].forward->score == target))) {
+                (exclusive && x->level[i].forward->score == target))) {
             rank += x->level[i].span;
             x = x->level[i].forward;
         }

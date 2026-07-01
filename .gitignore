@@ -4,6 +4,7 @@ flashkv
 test_dict
 test_resp
 test_sds
+test_zset
 bench_dict
 bench_server
 test_dict_dbg
