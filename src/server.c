@@ -343,6 +343,10 @@ void serverRun(struct Server *s) {
                 Connection *c = (Connection *)events[i].data.ptr;
                 if (events[i].events & EPOLLIN) {
                     handleRead(c, 0);
+                    /* handleRead 处理完后如果积压了回复，立即尝试写回，
+                     * 避免多等一轮 epoll_wait（类似 Redis beforeSleep 的思路） */
+                    if (c->state == CONN_STATE_WRITE)
+                        handleWrite(c);
                 }
                 if (events[i].events & EPOLLOUT) {
                     handleWrite(c);
