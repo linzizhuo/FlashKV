@@ -2,7 +2,7 @@
 
 **日期**: 2026-07-01
 **测试工具**: `redis-benchmark` (Redis 官方)
-**测试环境**: Linux 5.15, GCC, 单机 loopback
+**测试环境**: 腾讯云轻量应用服务器 (VM), Linux 5.15, GCC, 单机 loopback
 
 ---
 
@@ -39,13 +39,21 @@
 
 ### 为什么 P=16 GET 输给 Redis？
 
-Redis 在中等 pipeline 场景下的批量读回路径经过多年打磨，包括：
+**根因：事件循环写回被额外延迟一轮 epoll_wait。**
 
-- `writev` 聚合并发写
-- 更优的 epoll 事件合并策略
-- jemalloc 的内存分配优化
+FlashKV 的原始事件循环在 `handleRead` 处理完 pipeline 命令后，将回复积压在 `wbuf` 中，设置 `state=WRITE`，但写操作要等到**下一轮** `epoll_wait` 返回 `EPOLLOUT` 才执行。一次 pipeline batch 实际经历了：
 
-FlashKV 在 GET P=16 场景有提升空间，当前的批量回写路径（`handleRead → handleWrite → 尾递归`）在 16 条命令的窗口下额外触发了一次 epoll 往返。
+```
+epoll_wait → EPOLLIN → handleRead → epoll_ctl(MOD, R|W) → epoll_wait → EPOLLOUT → handleWrite
+```
+
+而 Redis 在事件循环末尾有 `beforeSleep` 钩子，读完后**立即**处理积压写，不经过第二轮 epoll_wait。
+
+**修复**：在 `handleRead` 返回后立即尝试 `handleWrite`（若 `state=WRITE`），省掉 epoll 往返。代码见 [server.c:344-350](../src/server.c#L344-L350)。
+
+> 这个优化思路类似 Redis 的 `beforeSleep` —— 在事件循环内部做完读-处理-写三个动作，不等内核再调度一轮。
+
+P=16 是这个问题的重灾区：批次数量多（~40k 批/秒），每批多一次 epoll 往返的开销被放大。P=64 批次少（~22k 批/秒），开销被摊薄，所以 P=64 数据依然领先。
 
 ### 为什么 P=64 SET 优势最大？
 
