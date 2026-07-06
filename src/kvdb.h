@@ -7,11 +7,9 @@
 
 /* 单个数据库：主 dict + expires dict 的封装。
  *
- * 调用方只通过接口操作，不需要知道内部有两套 dict、hash 计算、
- * 惰性删除、key 所有权管理等细节。
- *
- * kvdb 内部自己管理所有 key 的所有权（sdsdup），
- * 调用方传入的 key 不会被接管，始终由调用方负责释放。 */
+ * kvdbSet 和 kvdbGetOrCreateZset 接管传入的 key（sds 所有权），
+ * 调用方在调用后不得再 sdsfree 该 key。
+ * 其余 kvdb 接口（Get/Del/Exists/TTL 等）不接管 key。 */
 
 typedef struct kvdb kvdb;
 
@@ -21,7 +19,7 @@ void  kvdbFree(kvdb *kv);
 
 /* ---- key-value ---- */
 ValObj *kvdbGet(kvdb *kv, const void *key);        /* NULL = 不存在/已过期 */
-ValObj *kvdbSet(kvdb *kv, const void *key, ValObj *val); /* 返回旧值或 NULL */
+ValObj *kvdbSet(kvdb *kv, sds key, ValObj *val);             /* 接管 key，返回旧值或 NULL */
 int     kvdbDel(kvdb *kv, const void *key);        /* 1=删除成功 0=不存在 */
 int     kvdbExists(kvdb *kv, const void *key);     /* 1=存在 0=不存在 */
 
@@ -39,7 +37,7 @@ void      kvdbTryResize(kvdb *kv);         /* 填充率 < 10% 时缩主 dict + e
 /* ---- ZSET ---- */
 zset *kvdbGetZset(kvdb *kv, const void *key, int *found);
   /* *found: 1=是 zset, 0=key 不存在, -1=类型不匹配; 返回 zset 或 NULL */
-zset *kvdbGetOrCreateZset(kvdb *kv, const void *key);
-  /* 不存在时自动创建 ValObj+zsetNew 并写入; 类型不匹配或 OOM 返回 NULL */
+zset *kvdbGetOrCreateZset(kvdb *kv, sds key);
+  /* 接管 key；不存在则创建并写入，类型不匹配或 OOM 返回 NULL */
 
 #endif

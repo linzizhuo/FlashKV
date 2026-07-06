@@ -28,39 +28,15 @@
 
 ---
 
-## 分析
+## 关于性能差异的说明
 
-### 为什么 FlashKV 单请求更快？
+6 项场景中 FlashKV 在 5 项上高于 Redis 6.0。但需要指出：
 
-1. **无持久化开销**：没有 RDB 快照、AOF 日志，纯内存操作
-2. **无复制开销**：没有主从同步带来的额外路径
-3. **无多 DB 锁竞争**：虽然支持 16 个 DB，但访问是串行的
-4. **轻量级协议解析**：零拷贝 RESP 解析器
+- **对称对比**：benchmark 中 Redis 也是单机纯内存模式（无持久化、无复制），双方的功能差异不应拿来解释性能差距
+- **归因困难**：造成差距的可能因素很多——代码路径长度、抽象层开销、测量噪声等。在没有更严格的 profiling 数据之前，不宜下归因结论
+- **P=16 GET** 是唯一落后场景（-14%），但两端各轮次波动为 ±15%~18%，该差值在测量噪声范围内，不应过度解读
 
-### 为什么 P=16 GET 输给 Redis？
-
-**根因：pipeline batch 被额外拆成了两次事件循环，多了一组 syscall。**
-
-FlashKV 原始的事件循环流程：
-
-```
-epoll_wait → EPOLLIN → handleRead    → epoll_ctl(MOD, R|W) → epoll_wait → EPOLLOUT → handleWrite
-                                                                                   → epoll_ctl(MOD, R)
-```
-
-每个 batch 额外产生三条 syscall：`epoll_ctl(MOD)` + `epoll_wait` + `epoll_ctl(MOD)`。
-
-虽然 `epoll_wait(100ms)` 在 socket 可写时立刻返回（不会真的等 100ms），但 syscall 本身是有成本的——在云服务器上单次 batch 多约 10~20μs。P=16 场景下每秒约 40,000 个 batch，累积起来就是 40,000 × 15μs ≈ 0.6 秒的系统调用开销。
-
-Redis 在事件循环末尾有 `beforeSleep` 钩子，读完立即写回，不额外切事件：**一个 batch 只有 1 组 syscall，FlashKV 有 2 组。**
-
-**修复**：在 `handleRead` 返回后若 `state=WRITE`，立即调用 `handleWrite`，省掉写回那组 syscall（[server.c:344-350](../src/server.c#L344-L350)）。思路类似 Redis 的 `beforeSleep`。
-
-P=16 是这个问题的重灾区：批次数量多（~40k 批/秒），syscall 开销被放大。P=64 批次少（~22k 批/秒），开销被摊薄，所以 P=64 数据无明显影响。
-
-### 为什么 P=64 SET 优势最大？
-
-FlashKV 的 `MAX_PIPELINE_BATCH=64` 在这个窗口下恰好一次 `handleRead` 处理完毕，中间不切事件循环。配合 `TCP_NODELAY`，批量写入效率很高。Redis 在高 pipeline 下受限于其更复杂的内部调度（过期扫描、rehash 竞争等）。
+以上数据仅供参考，不做归因分析。
 
 ---
 
@@ -101,11 +77,16 @@ FlashKV 设置 `MAX_PIPELINE_BATCH=64`，原因：
 ---
 
 ## 复现方法
-
 ```bash
-# 安装 Redis
+# 0. 前提：本机已安装 gcc、make
+# 1. 安装 Redis（提供 redis-cli 和 redis-benchmark）
 sudo apt install redis-server redis-tools
 
-# 跑对比脚本
-bash scripts/bench_compare.sh
-```
+# 2. 构建 FlashKV
+make all
+
+# 3. 确保端口 6379 未被占用
+fuser -k 6379/tcp 2>/dev/null || true
+
+# 4. 运行对比脚本（自动启停 FlashKV 和 Redis，每项跑 5 轮）
+scripts/bench_compare.sh

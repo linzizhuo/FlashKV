@@ -65,26 +65,27 @@ ValObj *kvdbGet(kvdb *kv, const void *key)
     return dictfind(kv->dict, key, &h);
 }
 
-ValObj *kvdbSet(kvdb *kv, const void *key, ValObj *val)
+ValObj *kvdbSet(kvdb *kv, sds key, ValObj *val)
 {
     hash_t h = kv->dict->type->hash(key);
     ValObj *old = dictfind(kv->dict, key, &h);
 
+    /* SET 覆盖 → 清除旧 TTL（在 key 被 free 前执行） */
+    dictDelete(kv->expires, key, &h);
+
     if (old) {
-        /* key 已存在：原地覆写值，不产生新 key */
-        dictReplace(kv->dict, (void *)key, val, &h);
+        /* key 已存在：覆写值，传入的 key 不保留 */
+        dictReplace(kv->dict, key, val, &h);
+        sdsfree(key);
     } else {
-        /* 新 key：dup 后插入，kvdb 拥有 dupkey */
-        sds dupkey = sdsdup((sds)key);
-        if (!dupkey) return NULL;
-        if (dictAdd(kv->dict, dupkey, val, &h) != DICT_OK) {
+        /* 新 key：kvdb 接管 key，无需 dup */
+        if (dictAdd(kv->dict, key, val, &h) != DICT_OK) {
             /* rehash 间 key 被搬走了，极少发生 */
-            sdsfree(dupkey);
-            dictReplace(kv->dict, (void *)key, val, &h);
+            dictReplace(kv->dict, key, val, &h);
+            sdsfree(key);
         }
     }
 
-    dictDelete(kv->expires, key, &h);   /* SET 覆盖 → 清除旧 TTL */
     return old;
 }
 
@@ -233,20 +234,21 @@ zset *kvdbGetZset(kvdb *kv, const void *key, int *found)
     return obj->val.zs;
 }
 
-zset *kvdbGetOrCreateZset(kvdb *kv, const void *key)
+zset *kvdbGetOrCreateZset(kvdb *kv, sds key)
 {
     ValObj *obj = kvdbGet(kv, key);
     if (obj) {
-        if (obj->type != VAL_ZSET) return NULL;
+        if (obj->type != VAL_ZSET) { sdsfree(key); return NULL; }
+        sdsfree(key);          /* key 已存在，不保留 */
         return obj->val.zs;
     }
 
     /* key 不存在：创建 zset 并写入 */
     ValObj *newobj = valObjCreateZset();
-    if (!newobj) return NULL;
+    if (!newobj) { sdsfree(key); return NULL; }
 
-    ValObj *old = kvdbSet(kv, key, newobj);
-    if (old) valObjFree(old);     /* 理论上不可能，防御性释放 */
+    ValObj *old = kvdbSet(kv, key, newobj);   /* key 所有权移交 kvdbSet */
+    if (old) valObjFree(old);                 /* 理论上不可能，防御性释放 */
 
     return newobj->val.zs;
 }
