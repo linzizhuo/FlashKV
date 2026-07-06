@@ -225,7 +225,7 @@ static void setCommand(Connection *c, struct service *svc,
 
     ValObj *old = kvdbSet(svc->kvs[c->dbnum], key, obj);
     if (old) valObjFree(old);
-    sdsfree(key);   /* kvdb 内部已 dup，调用方始终释放 */
+    /* key 所有权已移交 kvdb，不再 sdsfree */
     addReplyOK(c);
 }
 
@@ -412,15 +412,15 @@ static void zaddCommand(Connection *c, struct service *svc,
     zset *zs = kvdbGetOrCreateZset(svc->kvs[c->dbnum], key);
     if (!zs) {
         addReplyError(c, "WRONGTYPE key holds wrong kind of value or OOM");
-        sdsfree(key); sdsfree(member);
+        sdsfree(member);   /* key 已由 kvdbGetOrCreateZset 释放 */
         return;
     }
 
     /* zsetAdd 统一处理新增/更新/重复检测（O(1) dict + O(log N) skiplist） */
     int added = zsetAdd(zs, score, member);
     /* member 所有权已移交 zset，OOM 时内部释放 member，不要重复 sdsfree */
+    /* key 所有权已移交 kvdbGetOrCreateZset，不再 sdsfree */
 
-    sdsfree(key);
     addReplyInteger(c, added);
 }
 

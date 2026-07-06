@@ -21,7 +21,7 @@ typedef struct
     union
     {
         sds str;
-        long long ll;
+        long long ll; 
         void *l;   // list *
         zset *zs;   // zset: dict + skip list of (score, sds) pairs
     } val;
