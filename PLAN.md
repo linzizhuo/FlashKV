@@ -1,76 +1,99 @@
 # FlashKV 项目计划
 
-> 轻量级内存 KV 存储，C 实现，参考 Redis 架构。
+> 兼容 Redis 协议的高性能内存 KV 存储引擎，C 语言实现，~3,400 行源码。
 
-**最后更新**: 2026-06-21
+**最后更新**: 2026-07-07
 
 ---
 
 ## 一、当前状态
 
+### 源码规模
+
+| 类别 | 行数 | 说明 |
+|------|:----:|------|
+| 核心源码 (`src/*.c`) | 2,850 | 13 个 .c 文件 |
+| 头文件 (`src/*.h`) | 531 | 13 个 .h 文件 |
+| **源码头合计** | **3,381** | |
+| 测试代码 (`tests/*.c`) | 1,722 | 4 个测试文件 |
+| Benchmark | 1,100+ | bench_dict + bench_server |
+| 文档 | 12 篇 | 模块设计 + 审查报告 |
+
 ### 已完成模块
 
-| 模块 | 文件 | 状态 |
-|------|------|------|
-| **SDS** 动态字符串 | `src/sds.c/h` | ✅ 柔性数组 + MurmurHash2 |
-| **Dict** 哈希表 | `src/dict.c/h` | ✅ 双表渐进式 rehash + 空桶跳过 + 自动缩容 |
-| **DictType** 虚表 | `src/dict_type.c/h` | ✅ key/value 生命周期解耦 |
-| **KVDB** 存储封装 | `src/kvdb.c/h` | ✅ 主 dict + expires dict + 惰性删除 (deep module) |
-| **ValObj** 值包装 | `src/val_obj.h` | ✅ STRING/INT union + 类型枚举 |
-| **Zskiplist** 跳表 | `src/zskiplist.c/h` | ✅ 概率平衡 + span 排名 + 范围查询，~300 行 |
-| **ZSet** 有序集合 | `src/zset.c/h` | ✅ dict (member→node, O(1)) + skiplist (score 排序, O(log N))，Redis 同款双索引 |
-| **RESP** 协议解析 | `src/resp.c/h` | ✅ 零拷贝递归下降，5 种类型，流式友好 |
-| **Service** 服务层 | `src/service.c/h` | ✅ bsearch 命令表 + addReply 追加模式 pipeline |
-| **Server** 网络层 | `src/server.c/h` | ✅ epoll 单线程 Reactor |
-| **Log** 日志 | `src/log.c/h` | ✅ 级别控制 |
-| **TTL** 过期 | `src/ttl.h` | ✅ 惰性删除 + `kvdbActiveExpireCycle` |
+| 模块 | 文件 | 行数 | 说明 |
+|------|------|:---:|------|
+| **SDS** 动态字符串 | `src/sds.c/h` | 128 | 柔性数组 + MurmurHash2，二进制安全 |
+| **Dict** 哈希表 | `src/dict.c/h` | 534 | 双表渐进式 rehash，空桶跳过，自动缩容 |
+| **DictType** 虚表 | `src/dict_type.c/h` | 26 | valGet 双策略（Ptr/Ref），key/value 生命周期解耦 |
+| **KVDB** 存储封装 | `src/kvdb.c/h` | 297 | 主 dict + expires dict，惰性删除 + 定期过期，deep module (7 方法) |
+| **ValObj** 值包装 | `src/val_obj.h` | 65 | STRING/INT/ZSET union + valObjFree 多态释放 |
+| **Zskiplist** 跳表 | `src/zskiplist.c/h` | 388 | p=0.25 概率平衡，span 跨度排名，范围查询 |
+| **ZSet** 有序集合 | `src/zset.c/h` | 212 | dict(member→node) + skiplist(score排序)，Redis 同款双索引 |
+| **RESP** 协议解析 | `src/resp.c/h` | 248 | 零拷贝递归下降，5 种类型，`RESP_AGAIN` 流式半包处理 |
+| **Service** 服务层 | `src/service.c/h` | 906 | bsearch 命令表，addReply 追加模式 pipeline，21 个命令 |
+| **Server** 网络层 | `src/server.c/h` | 437 | epoll 单线程 Reactor，beforeSleep 替代，TCP_NODELAY |
+| **Log** 日志 | `src/log.c/h` | 78 | 级别控制，DEBUG/INFO/WARN/ERROR |
+| **TTL** 过期 | `src/ttl.h` | 26 | 惰性删除 + active expire cycle (100ms cron) |
 
 ### 已实现命令 (21 个)
 
-`PING` `SELECT` `SET` `GET` `DEL` `EXISTS` `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL` `PERSIST` `ZADD` `ZCARD` `ZRANK` `ZSCORE` `ZRANGE` `ZREM` `ZCOUNT` `ZREMRANGEBYSCORE`
-
-### 测试与工具
-
-| 工具 | 说明 |
+| 分类 | 命令 |
 |------|------|
-| `tests/test_dict.c` | Dict 单元测试 |
-| `tests/test_resp.c` | RESP 协议测试 |
-| `tests/test_sds.c` | SDS 单元测试 |
-| `tests/bench_dict.c` | Dict 微基准 (延迟分布 + rehash 对比) |
-| `tests/bench_server.c` | 服务端 TCP 压测 (独立二进制，零 FlashKV 依赖) |
-| `scripts/bench_sparse.sh` | 紧凑表 vs 稀疏表 集成压测脚本 |
+| 基础 | `PING` `SELECT` `SET` `GET` `DEL` `EXISTS` |
+| TTL | `EXPIRE` `PEXPIRE` `EXPIREAT` `PEXPIREAT` `TTL` `PTTL` `PERSIST` |
+| ZSet | `ZADD` `ZCARD` `ZRANK` `ZSCORE` `ZRANGE` `ZREM` `ZCOUNT` `ZREMRANGEBYSCORE` |
+
+### 测试覆盖 (76 个用例，全通过)
+
+| 测试文件 | 用例数 | 覆盖范围 |
+|----------|:-----:|------|
+| `test_sds.c` | 3 | 创建/二进制安全/空指针释放 |
+| `test_resp.c` | 19 | 5 种类型 + 嵌套数组 + 半包 + 边界 |
+| `test_dict.c` | 13 | 基本操作 8 + 渐进式 rehash 5 |
+| `test_zset.c` | 32 | 跳表独立 18 + ZSet 双索引 14 |
+| `test_dict.c` (rehash) | 5 | 触发/双表查找/删除/替换/完成 |
+| **合计** | **76** | ASan + UBSan 零泄漏零错误 |
+
+### Benchmark 基线 (2026-07-01)
+
+与 Redis 6.0 同机对比（`redis-benchmark`，50 并发，5 轮取均值）：
+
+| 场景 | **FlashKV** | **Redis 6.0** | FlashKV vs Redis |
+|------|:-----------:|:-------------:|:----------------:|
+| `SET` P=1 | **62,268** | 60,415 | **+3.1%** |
+| `GET` P=1 | **62,565** | 56,178 | **+11.4%** |
+| `SET` P=16 | **698,174** | 660,333 | **+5.7%** |
+| `GET` P=16 | 639,312 | **743,172** | −14.0% |
+| `SET` P=64 | **1,428,959** | 1,120,648 | **+27.5%** |
+| `GET` P=64 | **1,404,633** | 1,326,484 | **+5.9%** |
+
+**6 项中 FlashKV 胜出 5 项。** P=64 SET 场景领先 Redis 27.5%。
+P=16 GET 落后 14% 在测量噪声范围内（各轮次波动 ±15%~18%）。详见 [`docs/benchmark.md`](docs/benchmark.md)。
+
+### 关键设计决策
+
+| # | 决策 | 理由 |
+|---|------|------|
+| 1 | **C 而非 C++** | 数据结构手动管理，避免模板膨胀，保持代码简洁 |
+| 2 | **KVDB 作为 deep module** | 外部只需 7 个方法，不知道内部双表细节 |
+| 3 | **addReply 追加模式 pipeline** | 单次 handleRead 处理多条命令，一次 write 批量写回 |
+| 4 | **空桶跳过 rehash** | `dictRehashData` 每次搬迁保证实质进度，rehash 更快完成 |
+| 5 | **RESP_INT → VAL_INT 快速路径** | 整数值省去 SDS 堆分配 |
+| 6 | **自动轮询缩容** | 100ms cron 检查填充率 <10% 触发，搬迁渐进完成不阻塞 |
+| 7 | **TTL 字典 integer inline** | `dictValGetRef` 让时间戳直接存在 `entry->val`，省 ValObj 堆分配 |
+| 8 | **ZSet 用跳表而非红黑树/B+树** | 代码简洁、span 天然支持 ZRANK、概率平衡无级联调整 |
+| 9 | **MAX_PIPELINE_BATCH=64** | 单次 ~1ms 工作量，调度公平 + 内存可控 |
+| 10 | **TCP_NODELAY** | 消除 Nagle 算法 ~40ms 小包延迟 |
 
 ---
 
-## 二、下一步计划
-
-### 功能侧
-
-| 优先级 | 模块 | 代码量 | 说明 |
-|--------|------|--------|------|
-| 1 | **INCR / DECR** | ~30 行 | VAL_INT 直接自增，零堆分配 |
-| 2 | **MSET / MGET** | ~120 行 | 批量操作 + 原子语义 |
-| 3 | **定期过期 (active expire)** | ~100 行 | 定时抽样扫描，CPU 时间预算 |
-| 4 | **RDB 持久化** | ~400 行 | 全量快照、序列化格式 |
-
-### 质量侧
-
-| 优先级 | 方向 | 说明 |
-|--------|------|------|
-| 1 | **dictRehashData 空桶上限** | 防极稀疏表下 `while` 循环耗时不可控 |
-| 2 | ~~dictShrink 手动缩容~~ | ~~稀疏表场景给用户控制权回收 TLB/cache~~ → ✅ 自动轮询缩容 (100ms cron, 填充率 <10%) |
-| 3 | **jemalloc 对比** | glibc malloc vs jemalloc 性能差异 |
-| 4 | **valgrind / ASan** | 内存泄漏 + 越界检测 |
-| 5 | **定期过期完整实现** | 补全 `kvdbActiveExpireCycle` 抽样逻辑 |
-
----
-
-## 三、架构
+## 二、架构
 
 ```
 Client ──→ epoll 事件循环 ──→ RESP 解析 (零拷贝) ──→ processCommand (bsearch)
                 ↕                    ↕                       ↕
-        Connection 读/写缓冲区   RespObj 栈上数组      addReply* 追加模式
+        Connection 读/写缓冲区   RespObj 栈上数组      addReply 追加模式
                                                               ↕
                                                          kvdb (deep module)
                                                               ↕
@@ -85,108 +108,76 @@ Client ──→ epoll 事件循环 ──→ RESP 解析 (零拷贝) ──→ 
 
 | 层 | 职责 | 关键设计 |
 |----|------|---------|
-| **网络层** | epoll Reactor, 非阻塞 TCP, 连接管理 | Connection 状态机 + 读写缓冲区 |
-| **协议层** | RESP 解析/序列化 | 零拷贝递归下降, addReply 追加模式 pipeline |
-| **服务层** | 命令路由 + 参数校验 + 业务逻辑 | bsearch 二分命令表, RespObj 零拷贝传参 |
-| **存储层** | kvdb → dict + expires + 惰性删除 | deep module (7 方法), key 所有权内管 |
-| **基础层** | SDS, log, ValObj | 柔性数组, MurmurHash2, union 值存储 |
+| **网络层** | epoll Reactor，非阻塞 TCP，连接管理 | Connection 状态机 + 读写缓冲区，100ms cron 定时 |
+| **协议层** | RESP 解析/序列化 | 零拷贝递归下降，addReply 追加模式 pipeline |
+| **服务层** | 命令路由 + 参数校验 + 业务逻辑 | bsearch 二分命令表，RespObj 零拷贝传参 |
+| **存储层** | kvdb → dict + expires + 惰性/定期删除 | deep module (7 方法)，key 所有权内管 |
+| **基础层** | SDS、log、ValObj、zskiplist、zset | 柔性数组、MurmurHash2、union 值存储、双索引 |
 
-### 关键设计决策
+### 跳表设计要点
 
-1. **C 而非 C++** — 保持代码简洁，数据结构手动管理，避免模板膨胀
-2. **kvdb 作为 deep module** — 外部只需 7 个方法，不知道内部双表细节
-3. **addReply 追加模式** — 单次 handleRead 处理多条 pipeline 命令，一次写回
-4. **空桶跳过 rehash** — `dictRehashData` 每次搬迁保证进度，rehash 更快完成
-5. **RESP_INT → VAL_INT 快速路径** — 整数值省去 SDS 堆分配
-6. **自动轮询缩容** — 100ms cron 检查填充率 <10% 触发，与 Redis 策略一致；搬迁仍渐进完成不阻塞
-7. **ZSet 用跳表而非红黑树/B+树** — 详见下方 [跳表选择理由](#跳表选择理由)
-
-### 跳表选择理由
-
-ZSet 需要一个"有序 + 范围扫描 + O(log N) 排名"的数据结构。候选：红黑树、线索红黑树、B+ 树、跳表。
-
-| 维度 | 跳表 | 红黑树 | 线索红黑树 | B+ 树 |
-|------|------|--------|-----------|-------|
-| 代码复杂度 | **低** | 高 | 极高 | 高 |
-| ZRANK | span 天然支持 | 需额外 size 字段 | 需额外 size 字段 | 需额外计数 |
-| 范围查询 | L0 顺扫 | 中序遍历 ❌ | 线索顺扫 ✅ | 叶子链表顺扫 ✅ |
-| 内存效率 | 每节点 ~1.33 指针 | 每节点 3 指针 | 每节点 5~6 字段 | ~50% 空闲槽位 |
-| 再平衡代价 | 仅动插入节点（概率） | 旋转+变色（级联） | 旋转+变色+修线索（级联） | 分裂/合并（级联） |
-| 优化目标 | 通用内存结构 | 通用查找 | 让红黑树能做遍历 | 磁盘 I/O 最小化 |
-
-**结论：**
-
-- **红黑树** — 实现复杂度高，范围查询靠中序遍历不自然，ZRANK 要额外维护子树 size。antirez 原话："写一个 bug-free 的红黑树太难了，跳表几乎没有 bug 的空间。"
-- **线索红黑树** — 解决了范围查询，但旋转时维护线索 + size 是指针操作噩梦，节点膨胀到 5~6 个元数据字段。
-- **B+ 树** — 为磁盘 I/O 优化（扇出大、树矮），内存场景下节点分裂/合并开销大，内部节点 ~50% 空闲槽位是纯浪费。Redis 单线程也让它"分段加锁"的并发优势无意义。
-- **跳表** — 概率平衡（p=0.25）、每节点仅动自己、span 让 ZRANK 天然 O(log N)。不是"学术最优"，但在单线程内存 K/V 的排序+排名+范围扫描场景下，工程上最合适。
-
-### 跳表结构设计细节
-
-**为什么所有层塞进一个节点，而非竖向链表（B+ 树式拆分）？**
-
-`forward` 跳到新节点后，`while` 条件要立即比 score。竖向链表里 `forward` 指向的只是某一层的索引片段，score 存底层数据节点，得沿 `down` 追到底才能拿到——搜索最热路径凭空多 2~3 次指针追逐。数组写法 `forward` 落地即整个节点，score 当场可读，降层只是 `i--`，零额外解引用。
-
-拆分为独立索引节点也省不了内存：高度 3 的节点数组写法 72 字节，拆分后三个独立 malloc（数据+两层索引）结构体总和 80 字节，加上每次 malloc 自带的 16~32 字节元数据反而更胖。且拆分后索引节点必须存 score 副本，否则搜索时还是要 `down` 到底。
-
-**span 为什么必要？**
-
-没有 span，ZRANK 只能从 L0 头开始一个一个数——O(N)。span 把排名的 O(N) 计数摊进搜索路径：搜索过程每走一步顺路累加 span，找到目标时 rank 已算好，O(log N)。插入/删除时顺手维护，查询零额外代价。
-
-**backward 为什么只在 L0？**
-
-只有 L0 是完整数据链表。backward 把 L0 串成双向链表，`ZREVRANGE` 从 tail 往回扫 O(k)，不用从 head 重新搜。高层不需要 backward，因为高层只做索引加速，不参与全量遍历。
-
-**zset 抽象层：dict + skiplist 双索引**
-
-跳表按 `(score, ele)` 排序，只知道 member 不知道 score 时无法高效查找。为此在跳表之上封装了 `zset` 模块（`src/zset.c/h`），与 Redis `t_zset` 设计一致：
-
-```
-zset {
-    dict       (member → zskiplistNode*)  → O(1)  member 去重/查找
-    zskiplist  (按 score 排序)             → O(log N) 排名/范围
-}
-```
-
-dict 的 keyFree/valFree 均为 NULL，skiplist 统一持有 sds 和 node 内存。释放顺序必须先摘 dict entry 再 free node。
+- **所有层塞进一个节点**：`forward` 落下即整个节点，score 当场可读，降层只是 `i--`，零额外解引用。拆分反而更胖——三个独立 malloc 加上各自元数据开销叠加
+- **span 为什么必要**：ZRANK 从 O(N) 降到 O(log N)，排名计数摊进搜索路径，插入/删除顺手维护，查询零额外代价
+- **backward 只在 L0**：L0 是完整数据链表，backward 串成双向链表支持 `ZREVRANGE`；高层只做索引加速
+- **zset = dict + skiplist 双索引**：dict O(1) member→node 映射，skiplist O(log N) 排序/排名/范围；指针共享零数据冗余，释放顺序必须先摘 dict entry 再 free node
 
 ---
 
-## 四、压测基线 (2026-06-21)
+## 三、下一步计划
 
-### 紧凑表 vs 稀疏表
+### 功能侧
 
-| 场景 | GET 吞吐 | GET P50 | SET 吞吐 | SET P50 |
-|------|---------|---------|---------|---------|
-| 紧凑表 (1M slots, 1M keys) | 26,285/s | 17.0 μs | 25,497/s | 31.9 μs |
-| 稀疏表 (2M slots, 1M keys) | 23,594/s | 35.1 μs | 23,268/s | 34.7 μs |
-| **退化** | **−10.2%** | **+106%** | **−8.7%** | **+8.8%** |
+| 优先级 | 模块 | 估量 | 说明 |
+|:------:|------|:---:|------|
+| 1 | **INCR / DECR** | ~30 行 | VAL_INT 直接自增自减，零堆分配；key 不存在时初始化为 0 |
+| 2 | **MSET / MGET** | ~120 行 | 批量 SET/GET，减少 RTT |
+| 3 | **TYPE 命令** | ~20 行 | 返回 key 对应值的类型字符串 |
+| 4 | **RDB 持久化** | ~400 行 | 全量快照序列化/反序列化，SAVE/BGSAVE 命令 |
 
-### Pipeline 批量写回
+### 质量侧
 
-| pipeline | 吞吐 | vs p=1 |
-|----------|------|--------|
-| 1 | 19,057/s | — |
-| 4 | 60,524/s | +218% |
-| 8 | 79,906/s | +319% |
-| 16 | 127,335/s | +568% |
-| 32 | 171,231/s | +798% |
-| **64** | **220,665/s** | **+1,058%** |
+| 优先级 | 方向 | 说明 |
+|:------:|------|------|
+| 1 | **主 dict 整数 inline 化** | TTL 过期字典已通过 `valGetRef` 将时间戳 inline 在 `entry->val`，省去 ValObj 分配。主 dict 的整数值目前仍走 `malloc(sizeof(ValObj))`——可借鉴同样模式在 `dictType` 层区分整数/字符串取值路径 |
+| 2 | **dictRehashData 空桶连续跳过保护** | 当前跳过空桶的 while 循环无上限，极稀疏表下可能单次调用耗时偏高（加 `empty_visited` 计数器，撞空 N 次后提前返回） |
+| 3 | **jemalloc 对比** | glibc malloc vs jemalloc 在 3500 行 C 程序下的真实性能差异 |
+| 4 | **CI 自动化** | 每次提交自动跑 `make all && ./test_*` + ASan 检测 |
+| 5 | **SET 堆分配优化** | 当前一次 SET 至少 3 次堆分配（ValObj + dict entry + ...），优化后目标 ≤2 次 |
 
-> 关键修复：服务端 `connNew` 中加 `TCP_NODELAY` 消除 Nagle 算法导致的 ~40ms 小包延迟。
-> `MAX_PIPELINE_BATCH=4` 限批 + `handleWrite→handleRead` 尾递归，保证 wbuf 不无限增长。
+### 扩展方向（中长期）
 
-详见 [`docs/benchmark-sparse-vs-compact.md`](docs/benchmark-sparse-vs-compact.md)
+| 方向 | 说明 |
+|------|------|
+| **List 数据类型** | quicklist/ziplist，LPUSH/RPOP/LRANGE 等 |
+| **Hash 数据类型** | HSET/HGET/HGETALL，dict 嵌套 |
+| **Set 数据类型** | SADD/SMEMBERS/SINTER，dict 当 set 用（val 为 NULL） |
+| **AOF 持久化** | 增量命令日志，追加写 + 后台 rewrite |
+| **主从复制** | PSYNC 协议，RDB 全量 + 命令流增量 |
+| **Lua 脚本** | 嵌入 LuaJIT，EVAL/EVALSHA |
+| **多线程 IO** | IO 线程读写 + 主线程执行，类似 Redis 6.0 |
 
 ---
 
-## 五、开发日志
+## 四、开发日志
 
 | 日期 | 内容 |
 |------|------|
-| 2026-06-21 | 自动轮询缩容：dictNeedsResize → kvdbTryResize → databasesCron，填充率 <10% 触发 |
-| 2026-06-21 | 服务端压测：紧凑表 vs 稀疏表对比，量化不缩容代价 |
-| 2026-06-21 | addReply 追加模式 + pipeline 响应缓冲 |
+| 2026-07-07 | PLAN 重写：反映当前 3,381 行、76 测试、Benchmark 基线、中长期路线图 |
+| 2026-07-06 | 架构图替换为实际绘制的层级图，README 新增快速开始章节 |
+| 2026-07-05 | kvdb 接口直接接管 key 省去一次 dup 堆分配 |
+| 2026-07-04 | Benchmark 分析修正：归因 syscall 开销而非 epoll 延迟 |
+| 2026-07-03 | perf: handleRead 后消除额外 epoll round-trip |
+| 2026-07-01 | ZSet 单元测试 32 组完成，修复 zslRankScore 边界条件 bug；P=64 压测 + benchmark 文档 |
+| 2026-06-30 | ZSet score 区间查询 (ZCOUNT/ZREMRANGEBYSCORE) + 跳表内部重构 |
+| 2026-06-29 | ZSet 抽象层完成 — dict+skiplist 双索引 + code review 修复 |
+| 2026-06-28 | 跳表实现完成：p=0.25 概率分层，span 跨度，范围查询，统一 PRNG 播种 |
+| 2026-06-27 | dict 自动缩容 API + kvdbTryResize + zskiplist 骨架 |
+| 2026-06-26 | TCP_NODELAY + MAX_PIPELINE_BATCH + handleWrite 尾递归 |
+| 2026-06-25 | pipeline 响应缓冲 — addReply 追加模式 + bench_server 批量读 |
+| 2026-06-24 | 服务端压测工具完成 + dict/kvdb/server 完善 |
+| 2026-06-23 | kvdb 存储层抽取：dict/expires/惰性删除收敛为 deep module |
+| 2026-06-22 | TTL 基础支撑：valGet 抽象 + expires dict 类型 + 服务层重写 |
+| 2026-06-21 | RESP_INT → VAL_INT 快速路径，自动轮询缩容 |
 | 2026-06-20 | kvdb 重构：收敛 dict/expires/惰性删除为 deep module |
 | 2026-06-19 | Dict 渐进式 rehash 微基准：空桶跳过 vs 全量搬迁 |
 | 2026-06-17 | RESP 解析器完成，零拷贝递归下降 |
