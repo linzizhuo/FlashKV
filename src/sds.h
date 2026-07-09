@@ -22,5 +22,8 @@ uint64_t sdsHash(const void *key);
 int sdsCompare(const void* key1, const void* key2);
 size_t sdslen(const sds str);
 void sdsfree(void *s);
-
+size_t sdsSerialize(const sds s, void **buf);
+/* 从 [4B len] [data] 格式反序列化回 sds。
+ * 返回 = 新 sds，调用方负责 sdsfree()。 */
+sds sdsDeserialize(const void *buf);
 #endif

@@ -2,6 +2,33 @@
 #include <string.h>
 #include <stdlib.h>
 
+size_t sdsSerialize(const sds s, void **buf)
+{
+    size_t len = sdslen(s);
+    size_t total = 4 + len;
+    unsigned char *p = malloc(total);
+    if (!p)
+    {
+        *buf = NULL;
+        return 0;
+    }
+
+    memcpy(p, &len, 4); /* 4B 长度 */
+    if (len > 0)
+        memcpy(p + 4, s, len); /* 数据 */
+
+    *buf = p;
+    return total;
+}
+
+sds sdsDeserialize(const void *buf)
+{
+    const unsigned char *p = buf;
+    uint32_t len;
+    memcpy(&len, p, 4);           /* 读 4B 长度 */
+    return sdsnewlen(p + 4, len); /* 读数据 */
+}
+
 sds sdsnew(const char *init)
 {
     size_t initlen = (init == NULL) ? 0 : strlen(init);
@@ -33,12 +60,13 @@ int sdsCompare(const void *key1, const void *key2)
     uint64_t len1 = sdslen(s1), len2 = sdslen(s2);
 
     if (len1 != len2)
-        return 1; // 不相等
+        return 1;                // 不相等
     return memcmp(s1, s2, len1); // 0 表示相等，其他表示不等
 }
 void sdsfree(void *s)
 {
-    if (s == NULL) return;
+    if (s == NULL)
+        return;
     free(SDS_HDR(64, s));
 }
 
@@ -46,6 +74,7 @@ size_t sdslen(const sds str)
 {
     return SDS_HDR(64, str)->len;
 }
+
 /* 使用MurmurHash2算法，快，均匀 */
 uint64_t sdsHash(const void *key)
 {

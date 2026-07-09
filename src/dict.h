@@ -1,10 +1,11 @@
 #ifndef _DICT_H
 #define _DICT_H
 
+#include <stddef.h>
 #include <stdint.h>
 #define DICT_OK 0
 #define DICT_ERROR 1
-
+#define DICT_END NULL
 /*
     "信任程序员，不给不需要的东西付代价"
 */
@@ -25,6 +26,12 @@ struct dictType{
     void (*keyFree)(void *key);
     void (*valFree)(void *val);
     void *(*valGet)(struct dictEntry *entry); // 取值策略
+
+    /* ---- 序列化（RDB 用）---- */
+    size_t (*keySerialize)(const void *key, void **buf); /* 返回总字节数，*buf=malloc */
+    void    *(*keyDeserialize)(const void *buf);            /* 返回新 key 对象 */
+    size_t (*valSerialize)(const void *val, void **buf);    /* 同上 */
+    void    *(*valDeserialize)(const void *buf);            /* 返回新 val 对象 */
 };
 
 /*
@@ -38,6 +45,12 @@ struct dict
     long rehashidx;
 };
 
+/* ---- 迭代器（供 RDB/AOF 等模块遍历全表）---- */
+
+typedef struct dictIterator dictIterator; /* 迭代器，不暴露 */
+dictIterator *dictGetBegin(struct dict *d); 
+dictEntry *dictNext(dictIterator *di);/* 返回下一个元素，定义指向空的迭代器没有Next，避免迭代器乱飘*/
+void dictFreeIterator(dictIterator *di);
 /*
     函数设计目标：核心就是dict模块，不会引入一些其他的模块强加依赖，做到松耦合。
 */
