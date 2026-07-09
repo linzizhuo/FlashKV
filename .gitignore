@@ -10,3 +10,4 @@ bench_server
 test_dict_dbg
 .claude/
 *.o
+.vscode
