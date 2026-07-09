@@ -6,6 +6,14 @@
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #define DICT_RANDOM_BUF_LEN 16 /* dictGetRandomKey 栈缓存容量，>此长度走兜底 */
 
+typedef struct dictIterator
+{
+    struct dict *d;
+    int table;               /* 0=ht[0], 1=ht[1] */
+    unsigned long index;     /* 当前桶下标 */
+    struct dictEntry *entry; /* 当前链节点 */
+} dictIterator;
+
 static void dicthtfree(struct dict *d, struct dictht *dht);
 
 static inline int dictIsRehashing(const struct dict *d)
@@ -470,5 +478,69 @@ dictEntry *dictGetRandomKey(struct dict *d)
 }
 
 void *dictEntryGetKey(const dictEntry *de) { return de->key; }
-
 void *dictEntryGetVal(struct dict *d, const dictEntry *de) { return d->type->valGet((dictEntry *)de); }
+
+/* 从 di->index 开始向后找下一个非空桶，返回桶的头节点。
+ * 找到后 di->index 停在桶的下一位置。ht[0] 扫完且 rehash 中则切 ht[1]。
+ * 找不到返回 NULL。*/
+static dictEntry *dictScanToNext(dictIterator *di)
+{
+    while (1)
+    {
+        /* 当前表内找非空桶 */
+        while (di->index < di->d->ht[di->table].size)
+        {
+            if (di->d->ht[di->table].table[di->index])
+            {
+                dictEntry *head = di->d->ht[di->table].table[di->index];
+                di->index++; /* 指针推进，下次从下一个桶开始 */
+                return head;
+            }
+            di->index++; /* 空桶，继续 */
+        }
+
+        /* 当前表扫完，rehash 中则切 ht[1] */
+        if (di->table == 0 && di->d->ht[1].table)
+        {
+            di->table = 1;
+            di->index = 0;
+        }
+        else
+        {
+            return NULL;
+        }
+    }
+}
+dictIterator *dictGetBegin(struct dict *d)
+{
+    dictIterator *di = malloc(sizeof(*di));
+    if (!di)
+        return NULL;
+    di->d = d;
+    di->table = 0;
+    di->index = 0;
+    di->entry = NULL;
+
+    /* 定位到第一个有效 entry */
+    di->entry = dictScanToNext(di);
+    return di;
+}
+/* 从迭代器当前位置出发，找到下一个有效 entry。
+ * 内部逻辑：当前链有 next → 直接返回；
+ *         当前链到头 → 跳到下一个非空桶；
+ *         ht[0] 扫完 + 正在 rehash → 切到 ht[1] 继续；
+ *         全扫完 → 返回 NULL。 */
+dictEntry *dictNext(dictIterator *di)
+{
+    /* 当前桶链上还有下一个 */
+    if (di->entry && di->entry->next)
+    {
+        di->entry = di->entry->next;
+        return di->entry;
+    }
+
+    /* 链走到头了，找下一个非空桶 */
+    di->entry = dictScanToNext(di);
+    return di->entry;
+}
+void dictFreeIterator(dictIterator *di) { free(di); }

@@ -13,6 +13,11 @@
 
 typedef struct kvdb kvdb;
 
+/* ---- RDB要用 ----*/
+struct dict *kvdbGetDict(kvdb *kv);
+struct dict *kvdbGetExpires(kvdb *kv);
+
+
 /* ---- 生命周期 ---- */
 kvdb *kvdbNew(void);
 void  kvdbFree(kvdb *kv);
@@ -39,5 +44,18 @@ zset *kvdbGetZset(kvdb *kv, const void *key, int *found);
   /* *found: 1=是 zset, 0=key 不存在, -1=类型不匹配; 返回 zset 或 NULL */
 zset *kvdbGetOrCreateZset(kvdb *kv, sds key);
   /* 接管 key；不存在则创建并写入，类型不匹配或 OOM 返回 NULL */
+
+
+// typedef struct kvdbVisitor
+// {
+//   void (*onEntry)(void *entry, time_t expire, void *ctx);
+//   void *ctx;
+// } kvdbVisitor;
+// /* 遍历 kvdb 中所有 key，对每个 key 调用 fn。
+//  * expire=0 表示无 TTL。privdata 透传给 fn（如 RDB 的 fd）。 */
+// void kvdbScan(kvdb *kv, kvdbVisitor* fn);
+
+
+
 
 #endif

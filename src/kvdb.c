@@ -1,4 +1,4 @@
-#define _POSIX_C_SOURCE 199309L   /* clock_gettime, CLOCK_MONOTONIC */
+#define _POSIX_C_SOURCE 199309L /* clock_gettime, CLOCK_MONOTONIC */
 
 #include "kvdb.h"
 #include "dict_type.h"
@@ -9,23 +9,34 @@
 #include <stdlib.h>
 
 #define DICT_HT_INITIAL_SIZE 4
+/* ---- 定期抽样删除过期 key ---- */
+
+#define ACTIVE_EXPIRE_LOOKUPS 20      /* 每轮采样数 */
+#define ACTIVE_EXPIRE_MAX_LOOPS 16    /* 最多轮数 */
+#define ACTIVE_EXPIRE_THRESHOLD 5     /* 过期数 < 此值退出 (LOOKUPS * 0.25) */
+#define ACTIVE_EXPIRE_TIME_LIMIT 1000 /* 单次最大耗时 (us)，避免阻塞事件循环 */
 
 struct kvdb
 {
-    struct dict *dict;     /* 主存储：key → ValObj */
-    struct dict *expires;  /* TTL 字典：key → 绝对秒时间戳（inline） */
+    struct dict *dict;    /* 主存储：key → ValObj */
+    struct dict *expires; /* TTL 字典：key → 绝对秒时间戳（inline） */
 };
+
+struct dict *kvdbGetDict(kvdb *kv) { return kv->dict; }
+struct dict *kvdbGetExpires(kvdb *kv) { return kv->expires; }
 
 /* ---- 内部：惰性删除 ---- */
 
 static bool expireIfNeeded(kvdb *kv, const void *key, hash_t *h)
 {
     tstamp_t *when = keyTtlFind(kv->expires, key, *h);
-    if (!when) return false;
-    if ((time_t)(*when) >= time(NULL)) return false;
+    if (!when)
+        return false;
+    if ((time_t)(*when) >= time(NULL))
+        return false;
 
     dictDelete(kv->expires, key, h);
-    dictDelete(kv->dict,   key, h);
+    dictDelete(kv->dict, key, h);
     return true;
 }
 
@@ -34,12 +45,14 @@ static bool expireIfNeeded(kvdb *kv, const void *key, hash_t *h)
 kvdb *kvdbNew(void)
 {
     kvdb *kv = malloc(sizeof(*kv));
-    if (!kv) return NULL;
+    if (!kv)
+        return NULL;
 
-    kv->dict    = dictnew(DICT_HT_INITIAL_SIZE, &dictTypeSds);
+    kv->dict = dictnew(DICT_HT_INITIAL_SIZE, &dictTypeSds);
     kv->expires = dictnew(DICT_HT_INITIAL_SIZE, &dictTTL);
 
-    if (!kv->dict || !kv->expires) {
+    if (!kv->dict || !kv->expires)
+    {
         dictfree(kv->dict);
         dictfree(kv->expires);
         free(kv);
@@ -50,7 +63,8 @@ kvdb *kvdbNew(void)
 
 void kvdbFree(kvdb *kv)
 {
-    if (!kv) return;
+    if (!kv)
+        return;
     dictfree(kv->dict);
     dictfree(kv->expires);
     free(kv);
@@ -73,13 +87,17 @@ ValObj *kvdbSet(kvdb *kv, sds key, ValObj *val)
     /* SET 覆盖 → 清除旧 TTL（在 key 被 free 前执行） */
     dictDelete(kv->expires, key, &h);
 
-    if (old) {
+    if (old)
+    {
         /* key 已存在：覆写值，传入的 key 不保留 */
         dictReplace(kv->dict, key, val, &h);
         sdsfree(key);
-    } else {
+    }
+    else
+    {
         /* 新 key：kvdb 接管 key，无需 dup */
-        if (dictAdd(kv->dict, key, val, &h) != DICT_OK) {
+        if (dictAdd(kv->dict, key, val, &h) != DICT_OK)
+        {
             /* rehash 间 key 被搬走了，极少发生 */
             dictReplace(kv->dict, key, val, &h);
             sdsfree(key);
@@ -93,7 +111,7 @@ int kvdbDel(kvdb *kv, const void *key)
 {
     hash_t h = kv->dict->type->hash(key);
     int ret = dictDelete(kv->dict, key, &h);
-    dictDelete(kv->expires, key, &h);   /* 顺手清 TTL */
+    dictDelete(kv->expires, key, &h); /* 顺手清 TTL */
     return ret == DICT_OK ? 1 : 0;
 }
 
@@ -111,14 +129,18 @@ int kvdbExpire(kvdb *kv, const void *key, time_t when)
     hash_t h = kv->dict->type->hash(key);
 
     if (!dictfind(kv->dict, key, &h))
-        return 0;   /* key 不存在 */
+        return 0; /* key 不存在 */
 
     tstamp_t *old = keyTtlFind(kv->expires, key, h);
-    if (old) {
-        *old = (tstamp_t)when;              /* 原地更新 */
-    } else {
-        sds expkey = sdsdup((sds)key);      /* expires 持独立 key */
-        if (!expkey) return 0;
+    if (old)
+    {
+        *old = (tstamp_t)when; /* 原地更新 */
+    }
+    else
+    {
+        sds expkey = sdsdup((sds)key); /* expires 持独立 key */
+        if (!expkey)
+            return 0;
         dictAdd(kv->expires, expkey, (void *)when, &h);
     }
     return 1;
@@ -130,11 +152,11 @@ long long kvdbTTL(kvdb *kv, const void *key)
 
     expireIfNeeded(kv, key, &h);
     if (!dictfind(kv->dict, key, &h))
-        return -2;   /* 不存在或已过期 */
+        return -2; /* 不存在或已过期 */
 
     tstamp_t *when = keyTtlFind(kv->expires, key, h);
     if (!when)
-        return -1;   /* 无 TTL */
+        return -1; /* 无 TTL */
 
     time_t remain = (time_t)(*when) - time(NULL);
     return remain > 0 ? (long long)remain : 0;
@@ -153,13 +175,6 @@ int kvdbPersist(kvdb *kv, const void *key)
     return 1;
 }
 
-/* ---- 定期抽样删除过期 key ---- */
-
-#define ACTIVE_EXPIRE_LOOKUPS  20   /* 每轮采样数 */
-#define ACTIVE_EXPIRE_MAX_LOOPS 16  /* 最多轮数 */
-#define ACTIVE_EXPIRE_THRESHOLD 5   /* 过期数 < 此值退出 (LOOKUPS * 0.25) */
-#define ACTIVE_EXPIRE_TIME_LIMIT 1000 /* 单次最大耗时 (us)，避免阻塞事件循环 */
-
 static long long ustime(void)
 {
     struct timespec ts;
@@ -176,17 +191,21 @@ void kvdbActiveExpireCycle(kvdb *kv)
     time_t now = time(NULL);
     long long start = ustime();
 
-    for (int loop = 0; loop < ACTIVE_EXPIRE_MAX_LOOPS; loop++) {
+    for (int loop = 0; loop < ACTIVE_EXPIRE_MAX_LOOPS; loop++)
+    {
         int expired = 0;
 
-        for (int i = 0; i < ACTIVE_EXPIRE_LOOKUPS; i++) {
+        for (int i = 0; i < ACTIVE_EXPIRE_LOOKUPS; i++)
+        {
             dictEntry *de = dictGetRandomKey(kv->expires);
-            if (!de) goto done;  /* expires 被删空 */
+            if (!de)
+                goto done; /* expires 被删空 */
 
             sds key = (sds)dictEntryGetKey(de);
             tstamp_t *when = (tstamp_t *)dictEntryGetVal(kv->expires, de);
 
-            if (now >= (time_t)(*when)) {
+            if (now >= (time_t)(*when))
+            {
                 dictDelete(kv->expires, key, NULL);
                 dictDelete(kv->dict, key, NULL);
                 expired++;
@@ -222,33 +241,48 @@ void kvdbTryResize(kvdb *kv)
 zset *kvdbGetZset(kvdb *kv, const void *key, int *found)
 {
     ValObj *obj = kvdbGet(kv, key);
-    if (!obj) {
-        if (found) *found = 0;
+    if (!obj)
+    {
+        if (found)
+            *found = 0;
         return NULL;
     }
-    if (obj->type != VAL_ZSET) {
-        if (found) *found = -1;
+    if (obj->type != VAL_ZSET)
+    {
+        if (found)
+            *found = -1;
         return NULL;
     }
-    if (found) *found = 1;
+    if (found)
+        *found = 1;
     return obj->val.zs;
 }
 
 zset *kvdbGetOrCreateZset(kvdb *kv, sds key)
 {
     ValObj *obj = kvdbGet(kv, key);
-    if (obj) {
-        if (obj->type != VAL_ZSET) { sdsfree(key); return NULL; }
-        sdsfree(key);          /* key 已存在，不保留 */
+    if (obj)
+    {
+        if (obj->type != VAL_ZSET)
+        {
+            sdsfree(key);
+            return NULL;
+        }
+        sdsfree(key); /* key 已存在，不保留 */
         return obj->val.zs;
     }
 
     /* key 不存在：创建 zset 并写入 */
     ValObj *newobj = valObjCreateZset();
-    if (!newobj) { sdsfree(key); return NULL; }
+    if (!newobj)
+    {
+        sdsfree(key);
+        return NULL;
+    }
 
-    ValObj *old = kvdbSet(kv, key, newobj);   /* key 所有权移交 kvdbSet */
-    if (old) valObjFree(old);                 /* 理论上不可能，防御性释放 */
+    ValObj *old = kvdbSet(kv, key, newobj); /* key 所有权移交 kvdbSet */
+    if (old)
+        valObjFree(old); /* 理论上不可能，防御性释放 */
 
     return newobj->val.zs;
 }
