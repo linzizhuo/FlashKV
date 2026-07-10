@@ -2,7 +2,7 @@
 #include "server.h"
 #include "sds.h"
 #include "val_obj.h"
-
+#include "config.h"
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -187,11 +187,15 @@ static void getCommand(Connection *c, struct service *svc,
     ValObj *obj = kvdbGet(svc->kvs[c->dbnum], key);
     if (!obj) {
         addReplyNull(c);
-    } else if (obj->type == VAL_INT) {
+    } else if (obj->type == DATA_INT) {
         addReplyInteger(c, obj->val.ll);
-    } else if (obj->type == VAL_STRING) {
+    }
+    else if (obj->type == DATA_STRING)
+    {
         addReplyBulkSds(c, obj->val.str);
-    } else {
+    }
+    else
+    {
         addReplyNull(c);
     }
     sdsfree(key);
@@ -214,12 +218,12 @@ static void setCommand(Connection *c, struct service *svc,
     if (!obj) { sdsfree(key); addReplyError(c, "OOM"); return; }
 
     if (argv[2].type == RESP_INT) {
-        obj->type   = VAL_INT;
+        obj->type = DATA_INT;
         obj->val.ll = argv[2].integer;
     } else {
         sds val = sdsnewlen(argv[2].str, argv[2].len);
         if (!val) { sdsfree(key); free(obj); addReplyError(c, "OOM"); return; }
-        obj->type   = VAL_STRING;
+        obj->type = DATA_STRING;
         obj->val.str = val;
     }
 
@@ -802,23 +806,23 @@ static int cmdCompare(const void *key, const void *elem)
 int processCommand(Connection *c, struct service *svc,
                    RespObj *argv, int argc)
 {
-    if (argc < 1) return SERVICE_ERR;
-    if (argv[0].type != RESP_STR) return SERVICE_ERR;
+    if (argc < 1) return ERR;
+    if (argv[0].type != RESP_STR) return ERR;
 
     size_t ncmd = sizeof(cmd_table) / sizeof(cmd_table[0]);
     Command *cmd = bsearch(&argv[0], cmd_table, ncmd, sizeof(Command), cmdCompare);
 
     if (!cmd) {
         addReplyError(c, "unknown command");
-        return SERVICE_OK;
+        return OK;
     }
     if (cmd->arity >= 0 && argc - 1 != cmd->arity) {
         addReplyError(c, "wrong number of arguments");
-        return SERVICE_OK;
+        return OK;
     }
 
     cmd->handler(c, svc, argv, argc);
-    return SERVICE_OK;
+    return OK;
 }
 
 /* ================================================================
@@ -827,11 +831,11 @@ int processCommand(Connection *c, struct service *svc,
 
 int serviceInit(struct service *svc, unsigned int dbsize)
 {
-    if (!svc || dbsize == 0) return SERVICE_ERR;
+    if (!svc || dbsize == 0) return ERR;
 
     svc->dbsize = dbsize;
     svc->kvs = calloc(dbsize, sizeof(kvdb *));
-    if (!svc->kvs) return SERVICE_ERR;
+    if (!svc->kvs) return ERR;
 
     for (unsigned int i = 0; i < dbsize; i++) {
         svc->kvs[i] = kvdbNew();
@@ -840,10 +844,10 @@ int serviceInit(struct service *svc, unsigned int dbsize)
                 kvdbFree(svc->kvs[j]);
             free(svc->kvs);
             svc->kvs = NULL;
-            return SERVICE_ERR;
+            return ERR;
         }
     }
-    return SERVICE_OK;
+    return OK;
 }
 
 void serviceFree(struct service *svc)

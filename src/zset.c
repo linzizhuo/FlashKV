@@ -2,7 +2,7 @@
 
 #include "zset.h"
 #include "sds.h"
-
+#include"config.h"
 /* ======================== DictType：member → zskiplistNode* ========================
  *
  * key = sds (member 字符串), val = zskiplistNode *
@@ -81,7 +81,7 @@ int zsetAdd(zset *zs, double score, sds ele)
         return 0;
     }
 
-    if (dictAdd(zs->dict, ele, node, (void *)&h) != DICT_OK) {
+    if (dictAdd(zs->dict, ele, node, (void *)&h) != OK) {
         /* 理论上不会发生（刚查过不存在），防御性回滚 */
         zsldel(zs->zsl, score, ele);
         return 0;

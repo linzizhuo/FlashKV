@@ -2,9 +2,7 @@
 #define _zskiplist_h
 
 #include "sds.h"
-
-#define ZSKIPLIST_MAXLEVEL 32
-#define ZSKIPLIST_P 0.25
+#include "config.h"
 
 typedef struct zskiplistNode
 {

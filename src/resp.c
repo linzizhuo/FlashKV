@@ -3,6 +3,7 @@
 #include <limits.h>
 #include <stdlib.h> // strtoll
 #include <string.h> // memset
+#include "config.h"
 // 成功: 返回消耗的字节数（> 0）
 // 协议错误: RESP_ERR (-1)
 // 数据不完整: RESP_AGAIN (-2)
@@ -14,9 +15,9 @@ static int readLine(const void *buf, size_t len)
         if (str[idx] == '\r' && str[idx + 1] == '\n') // 换行符
             return idx;                               // 字符串的长度
         if (idx >= MAX_LINE_LEN)                      // 超过最大长度，return error
-            return RESP_ERR;
+            return ERR;
     }
-    return RESP_AGAIN;
+    return AGAIN;
 }
 // 0拷贝解析。
 static int parseSimpleString(void *buf, size_t len, RespObj *out) // '+'
@@ -51,7 +52,7 @@ static int readNumber(const void *buf, size_t len, long long *val)
     errno = 0;
     *val = strtoll((const char *)buf, &end, 10);
     if (errno == ERANGE || *end != '\r')
-        return RESP_ERR;
+        return ERR;
     return ret; // 返回行长度（含 \r\n）
 }
 
@@ -87,15 +88,15 @@ static int parseBulkString(void *buf, size_t len, RespObj *out)
         return 1 + ret + 2;               // $ + "-1" + \r\n
     }
     if (blen < 0 || blen > MAX_BULK_LEN)
-        return RESP_ERR;                       // 负数或超大长度，非法
+        return ERR;                       // 负数或超大长度，非法
 
-    if (ret + blen + 5 > INT_MAX) return RESP_ERR;  // 防止 int 溢出（$ + 数字行 + 数据 + \r\n）
+    if (ret + blen + 5 > INT_MAX) return ERR;  // 防止 int 溢出（$ + 数字行 + 数据 + \r\n）
     size_t consumed = (size_t)(1 + ret + 2);          // $ + 数字行 + \r\n
     if (consumed + (size_t)blen + 2 > len)
-        return RESP_AGAIN;                            // 数据还没到齐
+        return AGAIN;                            // 数据还没到齐
     if (((char *)buf)[consumed + blen] != '\r' ||
         ((char *)buf)[consumed + blen + 1] != '\n')
-        return RESP_ERR;                              // 结尾不是 \r\n
+        return ERR;                              // 结尾不是 \r\n
 
     out->type = RESP_STR;
     out->str = (void *)((char *)buf + consumed);
@@ -123,12 +124,12 @@ static int parseArray(void *buf, size_t len, RespObj *out, int depth)
         out->elements = NULL;
         return 1 + ret + 2;               // * + "-1" + \r\n
     }
-    if (n < 0) return RESP_ERR;
+    if (n < 0) return ERR;
 
     out->type = RESP_ARRAY;
     out->len = (size_t)n;
     out->elements = malloc((size_t)n * sizeof(RespObj));
-    if (!out->elements) return RESP_ERR;
+    if (!out->elements) return ERR;
 
     size_t consumed = (size_t)(1 + ret + 2);   // * + 数字行 + \r\n
     for (long long i = 0; i < n; i++) {
@@ -146,7 +147,7 @@ static int parseArray(void *buf, size_t len, RespObj *out, int depth)
                 respFreeObj(&out->elements[j]);
             free(out->elements);
             out->elements = NULL;
-            return RESP_ERR;
+            return ERR;
         }
     }
     return (int)consumed;
@@ -179,8 +180,8 @@ void respFreeObj(RespObj *o)
 /* ---------- 内部递归入口（带深度限制） ---------- */
 static int respParseDepth(void *buf, size_t len, RespObj *out, int depth)
 {
-    if (depth > MAX_PARSE_DEPTH) return RESP_ERR;
-    if (len < 1) return RESP_AGAIN;
+    if (depth > MAX_PARSE_DEPTH) return ERR;
+    if (len < 1) return AGAIN;
 
     char *str = buf;
     switch (str[0])
@@ -190,7 +191,7 @@ static int respParseDepth(void *buf, size_t len, RespObj *out, int depth)
     case ':': return parseInteger(buf, len, out);
     case '$': return parseBulkString(buf, len, out);
     case '*': return parseArray(buf, len, out, depth + 1);
-    default:  return RESP_ERR;
+    default:  return ERR;
     }
 }
 

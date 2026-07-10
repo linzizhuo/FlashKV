@@ -4,17 +4,9 @@
 #include "dict_type.h"
 #include "ttl.h"
 #include "sds.h"
-
+#include "config.h"
 #include <stdbool.h>
 #include <stdlib.h>
-
-#define DICT_HT_INITIAL_SIZE 4
-/* ---- 定期抽样删除过期 key ---- */
-
-#define ACTIVE_EXPIRE_LOOKUPS 20      /* 每轮采样数 */
-#define ACTIVE_EXPIRE_MAX_LOOPS 16    /* 最多轮数 */
-#define ACTIVE_EXPIRE_THRESHOLD 5     /* 过期数 < 此值退出 (LOOKUPS * 0.25) */
-#define ACTIVE_EXPIRE_TIME_LIMIT 1000 /* 单次最大耗时 (us)，避免阻塞事件循环 */
 
 struct kvdb
 {
@@ -96,7 +88,7 @@ ValObj *kvdbSet(kvdb *kv, sds key, ValObj *val)
     else
     {
         /* 新 key：kvdb 接管 key，无需 dup */
-        if (dictAdd(kv->dict, key, val, &h) != DICT_OK)
+        if (dictAdd(kv->dict, key, val, &h) != OK)
         {
             /* rehash 间 key 被搬走了，极少发生 */
             dictReplace(kv->dict, key, val, &h);
@@ -112,7 +104,7 @@ int kvdbDel(kvdb *kv, const void *key)
     hash_t h = kv->dict->type->hash(key);
     int ret = dictDelete(kv->dict, key, &h);
     dictDelete(kv->expires, key, &h); /* 顺手清 TTL */
-    return ret == DICT_OK ? 1 : 0;
+    return ret == OK ? 1 : 0;
 }
 
 int kvdbExists(kvdb *kv, const void *key)
@@ -247,7 +239,7 @@ zset *kvdbGetZset(kvdb *kv, const void *key, int *found)
             *found = 0;
         return NULL;
     }
-    if (obj->type != VAL_ZSET)
+    if (obj->type != DATA_HASH)
     {
         if (found)
             *found = -1;
@@ -263,7 +255,7 @@ zset *kvdbGetOrCreateZset(kvdb *kv, sds key)
     ValObj *obj = kvdbGet(kv, key);
     if (obj)
     {
-        if (obj->type != VAL_ZSET)
+        if (obj->type != DATA_ZSET)
         {
             sdsfree(key);
             return NULL;
