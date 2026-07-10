@@ -2,13 +2,8 @@
 #include "ttl.h"
 #include <stdio.h>
 #include <time.h>
-
+#include "config.h"
 /* ---- 常量 ---- */
-#define RDB_MAGIC "FLASHKV"
-#define RDB_VERSION 1
-
-#define RDB_TYPE_MASK 0x7F  /* type 字节低 7 位 = ValType */
-#define RDB_HAS_EXPIRE 0x80 /* type 字节高 1 位 = TTL 标记 */
 
 // rdb.h
 int rdbSave(kvdb *kv, const char *filename)
@@ -21,7 +16,7 @@ int rdbSave(kvdb *kv, const char *filename)
     snprintf(tmpfile, sizeof(tmpfile), "temp-%d.rdb", getpid());
     FILE *fp = fopen(tmpfile, "wb");
     if (!fp)
-        return RDB_ERR;
+        return ERR;
 
     /* 1. 文件头 */
     if (fwrite(RDB_MAGIC, 7, 1, fp) != 1)
@@ -63,7 +58,7 @@ int rdbSave(kvdb *kv, const char *filename)
         }
 
         /* key */
-        if (rdbWriteSds(fp, key) == RDB_ERR)
+        if (rdbWriteSds(fp, key) == ERR)
         {
             dictFreeIterator(di);
             goto err;
@@ -80,7 +75,7 @@ int rdbSave(kvdb *kv, const char *filename)
             }
         }
         /* value */
-        if (rdbWriteVal(fp, val) == RDB_ERR)
+        if (rdbWriteVal(fp, val) == ERR)
         {
             dictFreeIterator(di);
             goto err;
@@ -94,15 +89,15 @@ int rdbSave(kvdb *kv, const char *filename)
     if (rename(tmpfile, filename) != 0)
     {
         unlink(tmpfile);
-        return RDB_ERR;
+        return ERR;
     }
 
-    return RDB_OK;
+    return OK;
 err:
     if (di)
         dictFreeIterator(di);
     if (fp)
         fclose(fp);
     unlink(tmpfile);
-    return RDB_ERR;
+    return ERR;
 }

@@ -3,8 +3,8 @@
 
 #include <stddef.h>
 #include "service.h"
+#include "config.h"
 
-#define SERVER_PORT 6379
 
 /* 连接状态 */
 enum ConnState {

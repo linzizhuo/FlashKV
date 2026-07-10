@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #define ROTL64(x, r) (((x) << (r)) | ((x) >> (64 - (r))))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
-#define DICT_RANDOM_BUF_LEN 16 /* dictGetRandomKey 栈缓存容量，>此长度走兜底 */
+#include "config.h" 
 
 typedef struct dictIterator
 {
@@ -89,12 +89,12 @@ int dictExpand(struct dict *d, unsigned long n)
 {
     unsigned long size = 1ul << n;
     if (dictIsRehashing(d) || d->ht[0].used > size)
-        return DICT_ERROR;
+        return ERR;
     if (size == d->ht[0].size)
-        return DICT_OK; /* 已是目标大小 */
+        return OK; /* 已是目标大小 */
     dicthtInit(d, &d->ht[1], size);
     d->rehashidx = 0;
-    return DICT_OK;
+    return OK;
 }
 
 int dictShrink(struct dict *d)
@@ -162,7 +162,7 @@ static int __attribute__((unused)) dictRehashStep(struct dict *d, unsigned long 
     d->rehashidx = end;
     if (d->ht[0].used == 0)
         dictRehashComplete(d);
-    return DICT_OK;
+    return OK;
 }
 /* 搬 number 个非空桶 —— 跳过空桶，保证每次调用都有实际搬迁 */
 static int dictRehashData(struct dict *d, unsigned long number)
@@ -196,7 +196,7 @@ static int dictRehashData(struct dict *d, unsigned long number)
     if (d->ht[0].used == 0)
         dictRehashComplete(d);
 
-    return DICT_OK;
+    return OK;
 }
 static unsigned long dicthtGetIdx(const struct dictht *ht, hash_t hashVal)
 {
@@ -267,18 +267,18 @@ int dictReplace(struct dict *d, void *key, void *val, void *hash)
         entry->val = val; /* key 已存在，覆写值（旧值由调用方释放） */
     else
         p->val = val; /* key 新插入，设置值 */
-    return DICT_OK;
+    return OK;
 }
 int dictAdd(struct dict *d, void *key, void *val, void *hash)
 {
     dictEntry *p = dictAddRaw(d, key, NULL, hash);
 
     if (p == NULL) // 插入失败，已经存在了
-        return DICT_ERROR;
+        return ERR;
     else // 键插入成功
     {
         p->val = val;
-        return DICT_OK;
+        return OK;
     }
 }
 void *dictfind(struct dict *d, const void *key, void *hash)
@@ -373,7 +373,7 @@ void dictfree(struct dict *d)
 int dictDelete(struct dict *d, const void *key, void *hash)
 {
     if (d == NULL || key == NULL)
-        return DICT_ERROR;
+        return ERR;
 
     if (dictIsRehashing(d))
         dictRehashData(d, 1);
@@ -393,7 +393,7 @@ int dictDelete(struct dict *d, const void *key, void *hash)
                 *prev = p->next;
                 dictEntryFree(d, p);
                 d->ht[t].used--;
-                return DICT_OK;
+                return OK;
             }
             prev = &p->next;
             p = p->next;
@@ -402,7 +402,7 @@ int dictDelete(struct dict *d, const void *key, void *hash)
         if (!dictIsRehashing(d))
             break;
     }
-    return DICT_ERROR;
+    return ERR;
 }
 
 dictEntry *dictGetRandomKey(struct dict *d)

@@ -1,12 +1,8 @@
 #ifndef _REDP_H
 #define _REDP_H
 
-#define RESP_OK 0  // 解析成功
-#define RESP_ERR -1  // 协议错误
-#define RESP_AGAIN -2 // 数据不完整，需要继续读，流式读取很有用。
-#define MAX_LINE_LEN (16 * 1024)  // 单行最大 16KB
-#define MAX_BULK_LEN (512 * 1024 * 1024)  // Bulk String 最大 512MB
-#define MAX_PARSE_DEPTH 1024  // 数组嵌套递归最大深度
+
+
 #include <stddef.h>
 
 // *3\r\n$3\r\nSET\r\n$4\r\nname\r\n$6\r\nflashkv\r\n

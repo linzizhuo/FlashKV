@@ -4,38 +4,65 @@
 #include "zset.h"
 #include <stdlib.h>
 #include <stdint.h>
-
-enum ValType
-{
-    VAL_STRING,
-    VAL_LIST,
-    VAL_ZSET,
-    VAL_SET,
-    VAL_HASH,
-    VAL_INT,
-};
+#include "config.h"
 
 typedef struct
 {
-    enum ValType type;
+    enum DataType type;
     union
     {
         sds str;
-        long long ll; 
-        void *l;   // list *
-        zset *zs;   // zset: dict + skip list of (score, sds) pairs
+        long long ll;
+        void *l;  // list *
+        zset *zs; // zset: dict + skip list of (score, sds) pairs
     } val;
 } ValObj;
 
-/* ---- ZSET helpers ---- */
+static inline size_t valObjSerialize(const ValObj *val, void **buf)
+{
+    if (!val || !buf)
+        return 0;
+    switch (val->type)
+    {
+    case DATA_STRING:
+        return sdsSerialize(val->val.str, buf);
+    case DATA_INT:
+        /* 内联: 直接写 8 字节 long long */
+        return 0;
+    case DATA_ZSET:
+        /* zsetSerialize */
+        return 0;
+    case DATA_LIST:
+        /* listSerialize */
+        return 0;
+    case DATA_SET:
+        /* setSerialize */
+        return 0;
+    case DATA_HASH:
+        /* hashSerialize */
+        return 0;
+    default:
+        return 0;
+    }
+}
 
+static inline ValObj *valObjDeserialize(const void *buf)
+{
+    if (!buf)
+        return NULL;
+    const unsigned char *p = buf;
+    int type = p[0]; // 获取类型
+}
+/* ---- ZSET helpers ---- */
 static inline ValObj *valObjCreateZset(void)
 {
     ValObj *o = malloc(sizeof(*o));
-    if (!o) return NULL;
-    o->type = VAL_ZSET;
+    if (!o)
+        return NULL;
+    o->type = DATA_ZSET;
     o->val.zs = zsetNew();
-    if (!o->val.zs) {
+    if (!o->val.zs)
+    {
         free(o);
         return NULL;
     }
@@ -44,18 +71,19 @@ static inline ValObj *valObjCreateZset(void)
 
 static inline void valObjFree(void *ptr)
 {
-    if (!ptr) return;
+    if (!ptr)
+        return;
     ValObj *o = (ValObj *)ptr;
     switch (o->type)
     {
-    case VAL_STRING:
+    case DATA_STRING:
         sdsfree(o->val.str);
         break;
-    case VAL_INT: /* nothing */;
+    case DATA_INT: /* nothing */;
         break;
-    case VAL_LIST: /* listRelease */;
+    case DATA_LIST: /* listRelease */;
         break;
-    case VAL_ZSET:
+    case DATA_ZSET:
         zsetFree(o->val.zs);
         break;
     default:

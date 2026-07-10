@@ -4,10 +4,6 @@
 #include "resp.h"
 #include "kvdb.h"
 
-#define SERVICE_OK    0
-#define SERVICE_ERR  -1   /* 协议错误（argv 为空/命令名非 STR） */
-#define SERVICE_AGAIN -2   /* 数据不完整，等下一轮 read */
-
 /* 服务层状态 */
 struct service
 {

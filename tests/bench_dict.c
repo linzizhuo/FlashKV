@@ -69,7 +69,7 @@ static long long nowNs(void) {
 
 static ValObj *makeInt(long long v) {
     ValObj *o = malloc(sizeof(*o));
-    o->type   = VAL_INT;
+    o->type   = DATA_INT;
     o->val.ll = v;
     return o;
 }

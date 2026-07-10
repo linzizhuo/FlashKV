@@ -1,3 +1,4 @@
+#include "config.h"
 #include "resp.h"
 #include <stdio.h>
 #include <assert.h>
@@ -38,7 +39,7 @@ static void test_simple_string_incomplete(void) {
     const char *buf = "+OK\r";               // 缺少 \n
     RespObj cmd;
     int ret = respParse((void *)buf, strlen(buf), &cmd);
-    assert(ret == RESP_AGAIN);
+    assert(ret == AGAIN);
 
     printf("   ✅\n");
 }
@@ -56,7 +57,7 @@ static void test_simple_string_too_long(void) {
 
     RespObj cmd;
     int ret = respParse(buf, len, &cmd);
-    assert(ret == RESP_ERR);                 // 超长 → 协议错误
+    assert(ret == ERR);                 // 超长 → 协议错误
 
     free(buf);
     printf("   ✅\n");
@@ -106,11 +107,11 @@ static void test_integer(void) {
 
     /* 不完整 */
     ret = respParse(":42", 3, &cmd);
-    assert(ret == RESP_AGAIN);
+    assert(ret == AGAIN);
 
     /* 不是数字 */
     ret = respParse(":abc\r\n", 6, &cmd);
-    assert(ret == RESP_ERR);
+    assert(ret == ERR);
 
     printf("   ✅\n");
 }
@@ -149,17 +150,17 @@ static void test_bulk_string(void) {
     /* 不完整：缺少数据 */
     const char *partial = "$10\r\nhel";
     ret = respParse((void *)partial, strlen(partial), &cmd);
-    assert(ret == RESP_AGAIN);
+    assert(ret == AGAIN);
 
     /* 不完整：缺少结尾 \r\n */
     const char *partial2 = "$5\r\nhello";
     ret = respParse((void *)partial2, strlen(partial2), &cmd);
-    assert(ret == RESP_AGAIN);
+    assert(ret == AGAIN);
 
     /* 声明 3 字节但数据结束位置不对 */
     const char *bad_end = "$3\r\nabcd\r\n";    // 11 字节，但 buf[7]='d' ≠ '\r'
     ret = respParse((void *)bad_end, strlen(bad_end), &cmd);
-    assert(ret == RESP_ERR);
+    assert(ret == ERR);
 
     printf("   ✅\n");
 }
@@ -293,12 +294,12 @@ static void test_array_incomplete(void) {
     /* 数组长度已知但元素不完整 */
     const char *buf = "*2\r\n$3\r\nGET\r\n";  // 只有 1 个元素
     ret = respParse((void *)buf, strlen(buf), &cmd);
-    assert(ret == RESP_AGAIN);
+    assert(ret == AGAIN);
 
     /* *2\r\n$3\r\nG                    —— 数据切在 bulk string 中间 */
     const char *buf2 = "*2\r\n$3\r\nG";
     ret = respParse((void *)buf2, strlen(buf2), &cmd);
-    assert(ret == RESP_AGAIN);
+    assert(ret == AGAIN);
 
     printf("   ✅\n");
 }
@@ -311,11 +312,11 @@ static void test_array_bad_number(void) {
 
     /* 数组长度不是数字 */
     ret = respParse("*abc\r\n", 6, &cmd);
-    assert(ret == RESP_ERR);
+    assert(ret == ERR);
 
     /* 负数但非 -1 */
     ret = respParse("*-2\r\n", 5, &cmd);
-    assert(ret == RESP_ERR);
+    assert(ret == ERR);
 
     printf("   ✅\n");
 }
@@ -327,7 +328,7 @@ static void test_empty_buf(void) {
 
     RespObj cmd;
     int ret = respParse("", 0, &cmd);
-    assert(ret == RESP_AGAIN);              // 空缓冲区
+    assert(ret == AGAIN);              // 空缓冲区
 
     printf("   ✅\n");
 }
@@ -339,13 +340,13 @@ static void test_unknown_first_byte(void) {
     int ret;
 
     ret = respParse("X\r\n", 3, &cmd);
-    assert(ret == RESP_ERR);
+    assert(ret == ERR);
 
     ret = respParse(" ", 1, &cmd);
-    assert(ret == RESP_ERR);
+    assert(ret == ERR);
 
     ret = respParse("\x00", 1, &cmd);
-    assert(ret == RESP_ERR);
+    assert(ret == ERR);
 
     printf("   ✅\n");
 }
@@ -356,11 +357,11 @@ static void test_incomplete_headers(void) {
     RespObj cmd;
 
     /* 只有类型字节，没有后续数据 */
-    assert(respParse("+", 1, &cmd) == RESP_AGAIN);
-    assert(respParse("-", 1, &cmd) == RESP_AGAIN);
-    assert(respParse(":", 1, &cmd) == RESP_AGAIN);
-    assert(respParse("$", 1, &cmd) == RESP_AGAIN);
-    assert(respParse("*", 1, &cmd) == RESP_AGAIN);
+    assert(respParse("+", 1, &cmd) == AGAIN);
+    assert(respParse("-", 1, &cmd) == AGAIN);
+    assert(respParse(":", 1, &cmd) == AGAIN);
+    assert(respParse("$", 1, &cmd) == AGAIN);
+    assert(respParse("*", 1, &cmd) == AGAIN);
 
     printf("   ✅\n");
 }

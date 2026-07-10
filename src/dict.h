@@ -3,8 +3,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#define DICT_OK 0
-#define DICT_ERROR 1
 #define DICT_END NULL
 /*
     "信任程序员，不给不需要的东西付代价"

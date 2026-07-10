@@ -9,7 +9,7 @@
 /* 辅助：创建 ValObj 字符串 */
 static ValObj *makeStr(const char *s) {
     ValObj *o = malloc(sizeof(*o));
-    o->type = VAL_STRING;
+    o->type = DATA_STRING;
     o->val.str = sdsnew(s);
     return o;
 }
@@ -17,7 +17,7 @@ static ValObj *makeStr(const char *s) {
 /* 辅助：创建 ValObj 整数 */
 static ValObj *makeInt(long long v) {
     ValObj *o = malloc(sizeof(*o));
-    o->type = VAL_INT;
+    o->type = DATA_INT;
     o->val.ll = v;
     return o;
 }
@@ -34,19 +34,19 @@ static void test_add_and_find(void)
 
     sds k1 = sdsnew("name");
     ValObj *v1 = makeStr("FlashKV");
-    assert(dictAdd(d, k1, v1, NULL) == DICT_OK);
+    assert(dictAdd(d, k1, v1, NULL) == OK);
     assert(d->ht[0].used == 1);
 
     /* 重复 key 插入失败，调用方自己清理 */
     ValObj *dup = makeStr("dup");
-    assert(dictAdd(d, k1, dup, NULL) == DICT_ERROR);
+    assert(dictAdd(d, k1, dup, NULL) == ERR);
     valObjFree(dup);  /* dict 未接管，调用方释放 */
     assert(d->ht[0].used == 1);
 
     /* 查找 */
     ValObj *found = (ValObj *)dictfind(d, k1, NULL);
     assert(found != NULL);
-    assert(found->type == VAL_STRING);
+    assert(found->type == DATA_STRING);
     assert(strcmp(found->val.str, "FlashKV") == 0);
 
     /* 不存在的 key */
@@ -74,7 +74,7 @@ static void test_replace(void)
     if (old) valObjFree(old);   /* 调用方释放被替换的旧值 */
 
     ValObj *found = (ValObj *)dictfind(d, k, NULL);
-    assert(found->type == VAL_STRING);
+    assert(found->type == DATA_STRING);
     assert(strcmp(found->val.str, "new") == 0);
 
     dictfree(d);
@@ -94,14 +94,14 @@ static void test_delete(void)
     assert(d->ht[0].used == 2);
 
     /* 删除存在的 key */
-    assert(dictDelete(d, k2, NULL) == DICT_OK);
+    assert(dictDelete(d, k2, NULL) == OK);
     assert(d->ht[0].used == 1);
     /* 注意：k2 已经在 dictDelete 里被 free 了，不能再用原指针查 */
     sds k2copy = sdsnew("gone");
     assert(dictfind(d, k2copy, NULL) == NULL);
 
     /* 删除不存在的 key（在 free k2copy 之前） */
-    assert(dictDelete(d, k2copy, NULL) == DICT_ERROR);
+    assert(dictDelete(d, k2copy, NULL) == ERR);
     sdsfree(k2copy);
 
     /* 验证另一个 key 还在 */
@@ -121,7 +121,7 @@ static void test_delete_missing(void)
 
     /* 删不存在的 key */
     sds missing = sdsnew("nobody");
-    assert(dictDelete(d, missing, NULL) == DICT_ERROR);
+    assert(dictDelete(d, missing, NULL) == ERR);
     assert(d->ht[0].used == 1);
     sdsfree(missing);
 
@@ -138,7 +138,7 @@ static void test_delete_no_key_free(void)
     dictAdd(d, k, makeInt(42), NULL);
 
     /* dictDelete 会自己 keyFree + valFree，调用方不用再 free */
-    assert(dictDelete(d, k, NULL) == DICT_OK);
+    assert(dictDelete(d, k, NULL) == OK);
     assert(d->ht[0].used == 0);
 
     dictfree(d);
@@ -158,7 +158,7 @@ static void test_multiple_keys(void)
         snprintf(buf, sizeof(buf), "key-%d", i);
         sds k = sdsnew(buf);
         ValObj *v = makeInt(i * 10);
-        assert(dictAdd(d, k, v, NULL) == DICT_OK);
+        assert(dictAdd(d, k, v, NULL) == OK);
     }
     assert(dictTotalUsed(d) == (unsigned long)N);
 
@@ -169,7 +169,7 @@ static void test_multiple_keys(void)
         sds k = sdsnew(buf);
         ValObj *v = (ValObj *)dictfind(d, k, NULL);
         assert(v != NULL);
-        assert(v->type == VAL_INT);
+        assert(v->type == DATA_INT);
         assert(v->val.ll == i * 10);
         sdsfree(k);
     }
@@ -179,7 +179,7 @@ static void test_multiple_keys(void)
         char buf[32];
         snprintf(buf, sizeof(buf), "key-%d", i);
         sds k = sdsnew(buf);
-        assert(dictDelete(d, k, NULL) == DICT_OK);
+        assert(dictDelete(d, k, NULL) == OK);
         sdsfree(k);
     }
     assert(dictTotalUsed(d) == (unsigned long)(N - N / 2));
@@ -214,12 +214,12 @@ static void test_valobj_types(void)
 
     /* 查字符串 */
     ValObj *fs = (ValObj *)dictfind(d, ks, NULL);
-    assert(fs->type == VAL_STRING);
+    assert(fs->type == DATA_STRING);
     assert(strcmp(fs->val.str, "string-val") == 0);
 
     /* 查整数 */
     ValObj *fi = (ValObj *)dictfind(d, ki, NULL);
-    assert(fi->type == VAL_INT);
+    assert(fi->type == DATA_INT);
     assert(fi->val.ll == 999);
 
     dictfree(d);
@@ -236,9 +236,9 @@ static void test_null_safety(void)
     printf("   dictfree(NULL) 不崩溃 ✅\n");
 
     /* dictDelete — 用户已经写了防御 */
-    assert(dictDelete(NULL, NULL, NULL) == DICT_ERROR);
+    assert(dictDelete(NULL, NULL, NULL) == ERR);
     struct dict *d = dictnew(4, &dictTypeSds);
-    assert(dictDelete(d, NULL, NULL) == DICT_ERROR);
+    assert(dictDelete(d, NULL, NULL) == ERR);
     dictfree(d);
     printf("   dictDelete 防御 ✅\n");
 }
@@ -295,7 +295,7 @@ static void test_rehash_find_during(void)
         sds k = sdsnew(buf);
         ValObj *v = dictfind(d, k, NULL);
         assert(v != NULL);
-        assert(v->type == VAL_INT);
+        assert(v->type == DATA_INT);
         assert(v->val.ll == (long long)i * 10);
         sdsfree(k);
     }
@@ -323,7 +323,7 @@ static void test_rehash_delete_during(void)
         char buf[32];
         snprintf(buf, sizeof(buf), "k%d", i);
         sds k = sdsnew(buf);
-        assert(dictDelete(d, k, NULL) == DICT_OK);
+        assert(dictDelete(d, k, NULL) == OK);
         sdsfree(k);
     }
     assert(dictTotalUsed(d) == before - 10);

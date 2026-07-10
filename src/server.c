@@ -16,11 +16,7 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
-
-#define MAX_EVENTS 1024
-#define BUF_SIZE 4096
-#define MAX_PIPELINE_BATCH 64  /* handleRead 单轮最多处理命令数，~1ms 调度粒度 */
-
+#include "config.h"
 static long long mstime(void);
 
 /* ---------- 辅助函数 ---------- */
@@ -171,7 +167,7 @@ static void handleRead(Connection *c, int skip_read) {
                 c->state = CONN_STATE_WRITE;
                 processed++;
 
-            } else if (ret == RESP_AGAIN) {
+            } else if (ret == AGAIN) {
                 if (c->rlen >= c->rcap - 1) {
                     addReplyError(c, "request too large");
                     c->state = CONN_STATE_WRITE;
@@ -295,7 +291,7 @@ struct Server *serverCreate(int port) {
     s->cron_db = 0;
 
     /* 初始化服务层（16 个数据库） */
-    if (serviceInit(&s->svc, 16) != SERVICE_OK) {
+    if (serviceInit(&s->svc, 16) != OK) {
         LOG_ERROR("serviceInit failed");
         close(s->epoll_fd);
         close(s->listen_fd);
