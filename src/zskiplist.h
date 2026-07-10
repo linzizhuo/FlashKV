@@ -3,18 +3,13 @@
 
 #include "sds.h"
 #include "config.h"
+typedef struct zskiplistNode zskiplistNode;
 
-typedef struct zskiplistNode
+/* 提示：使用的时候栈上分配，可以省去一次malloc喔。 */
+typedef struct zslIterator
 {
-    double score;                   // 排序分值
-    sds ele;                        // 元素（动态字符串）
-    struct zskiplistNode *backward; // 后退指针（第1层反向链表）
-    struct zskiplistLevel
-    {
-        struct zskiplistNode *forward; // 前向指针
-        unsigned long span;            // 跨度（本层到下一节点跨越的节点数）
-    } level[];                         // 柔性数组，每个节点 1~N 层
-} zskiplistNode;
+    zskiplistNode *current; /* NULL = 结束 */
+} zslIterator;
 
 typedef struct zskiplist
 {
@@ -26,7 +21,24 @@ typedef struct zskiplist
 /* ---- API ---- */
 zskiplist *zslnew(void);
 void zslfree(zskiplist *zsl);
+/* -----------迭代器----------- */
+// 
 
+zskiplistNode *zslNext(zslIterator *it);        /* L0 forward，NULL=结束 */
+zskiplistNode *zslPrev(zslIterator *it);        /* L0 backward，NULL=结束 */
+// 因为是栈上分配，防止滥用，所以禁掉了，使用的时候发现需要free但找不到free就要想想是不是写错了。
+// void zslFreeIterator(zslIterator *it);
+// zslIterator *zslGetBegin(const zskiplist *zsl); /* 从 L0 第一个有效节点开始 */
+// zslIterator *zslGetIterator(const zskiplistNode *node);
+#define zslGetBegin(zsl) \
+    ((zslIterator){.current = zslNext(&(zslIterator){.current = (zsl)->header})})
+
+#define zslGetIterator(node) \
+    ((zslIterator){.current = (zskiplistNode *)(node)})
+zskiplistNode *zslGetNode(const zslIterator *it);
+/* 访问器 */
+double zslNodeScore(const zskiplistNode *node);
+sds zslNodeEle(const zskiplistNode *node);
 /*
  * 插入 (score, ele) 节点，接管 sds 所有权。
  *
@@ -44,5 +56,10 @@ unsigned long zsldelrange(zskiplist *zsl, double min, double max);
 
 zskiplistNode **zslrange(zskiplist *zsl, double min, double max,
                          unsigned long *count);
+
+/* ---- 序列化（RDB 用）---- */
+size_t zslSerialize(const zskiplist *zsl, void **buf);
+zskiplist *zslDeserialize(const void *buf);
+
 
 #endif

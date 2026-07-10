@@ -29,7 +29,7 @@ struct dictType{
     size_t (*keySerialize)(const void *key, void **buf); /* 返回总字节数，*buf=malloc */
     void    *(*keyDeserialize)(const void *buf);            /* 返回新 key 对象 */
     size_t (*valSerialize)(const void *val, void **buf);    /* 同上 */
-    void    *(*valDeserialize)(const void *buf);            /* 返回新 val 对象 */
+    void *(*valDeserialize)(int type, const void *buf);     /* 返回新 val 对象 */
 };
 
 /*

@@ -7,6 +7,40 @@
 #define ZSL_GT 1  /* >  */
 
 /* ======================== 内部辅助 ======================== */
+struct zskiplistNode
+{
+    double score;                   // 排序分值
+    sds ele;                        // 元素（动态字符串）
+    struct zskiplistNode *backward; // 后退指针（第1层反向链表）
+    struct zskiplistLevel
+    {
+        struct zskiplistNode *forward; // 前向指针
+        unsigned long span;            // 跨度（本层到下一节点跨越的节点数）
+    } level[];                         // 柔性数组，每个节点 1~N 层
+};
+
+double zslNodeScore(const zskiplistNode *node) { return node->score; }
+sds zslNodeEle(const zskiplistNode *node) { return node->ele; }
+
+zskiplistNode *zslNext(zslIterator *it)
+{
+    if (!it || !it->current)
+        return NULL;
+    it->current = it->current->level[0].forward;
+    return it->current; // 返回新位置
+}
+
+zskiplistNode *zslPrev(zslIterator *it)
+{
+    if (!it || !it->current)
+        return NULL;
+    it->current = it->current->backward;
+    return it->current; // 返回新位置
+}
+zskiplistNode *zslGetNode(const zslIterator *it)
+{
+    return it ? it->current : NULL;
+}
 
 /* 掷硬币决定新节点高度，p=0.25，最高 32 层 */
 static int zslRandomLevel(void)

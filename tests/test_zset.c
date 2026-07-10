@@ -20,24 +20,26 @@ static sds mk(int n) {
 /* 辅助：遍历 L0 收集所有 ele 的序号（解析 "mN" 中的 N） */
 static void collectL0(zskiplist *zsl, int *out, int *n_out) {
     *n_out = 0;
-    zskiplistNode *x = zsl->header->level[0].forward;
+    zslIterator it = zslGetBegin(zsl);
+    zskiplistNode *x = zslGetNode(&it);
     while (x) {
         int id;
-        sscanf(x->ele, "m%d", &id);
+        sscanf(zslNodeEle(x), "m%d", &id);
         out[(*n_out)++] = id;
-        x = x->level[0].forward;
+        x = zslNext(&it);
     }
 }
 
 /* 辅助：反向遍历 L0 收集 ele 序号 */
 static void collectL0Reverse(zskiplist *zsl, int *out, int *n_out) {
     *n_out = 0;
-    zskiplistNode *x = zsl->tail;
+    zslIterator it = zslGetIterator(zsl->tail);
+    zskiplistNode *x = zslGetNode(&it);
     while (x) {
         int id;
-        sscanf(x->ele, "m%d", &id);
+        sscanf(zslNodeEle(x), "m%d", &id);
         out[(*n_out)++] = id;
-        x = x->backward;
+        x = zslPrev(&it);
     }
 }
 
@@ -128,10 +130,11 @@ static void test_zsl_insert_same_score(void)
     zslinsert(zsl, 1.0, sdsnew("b"));
     assert(zsl->length == 3);
 
-    zskiplistNode *x = zsl->header->level[0].forward;
-    assert(strcmp(x->ele, "a") == 0);  x = x->level[0].forward;
-    assert(strcmp(x->ele, "b") == 0);  x = x->level[0].forward;
-    assert(strcmp(x->ele, "c") == 0);
+    zslIterator it = zslGetBegin(zsl);
+    zskiplistNode *x = zslGetNode(&it);
+    assert(strcmp(zslNodeEle(x), "a") == 0);  x = zslNext(&it);
+    assert(strcmp(zslNodeEle(x), "b") == 0);  x = zslNext(&it);
+    assert(strcmp(zslNodeEle(x), "c") == 0);
 
     zslfree(zsl);
     printf("   ✅\n");
@@ -174,8 +177,8 @@ static void test_zsl_delete_tail(void)
 
     /* tail 应该更新为 m3 */
     assert(zsl->tail != NULL);
-    assert(strcmp(zsl->tail->ele, "m3") == 0);
-    assert(zsl->tail->level[0].forward == NULL);
+    assert(strcmp(zslNodeEle(zsl->tail), "m3") == 0);
+    { zslIterator it = zslGetIterator(zsl->tail); assert(zslNext(&it) == NULL); }
 
     zslfree(zsl);
     printf("   ✅\n");
@@ -258,10 +261,11 @@ static void test_zsl_delete_reinsert(void)
     int arr[32], n;
     collectL0(zsl, arr, &n);
     /* score 顺序: a(1.0) < b(2.5) < c(3.0) */
-    zskiplistNode *x = zsl->header->level[0].forward;
-    assert(x->score == 1.0); x = x->level[0].forward;
-    assert(x->score == 2.5); x = x->level[0].forward;
-    assert(x->score == 3.0);
+    zslIterator it = zslGetBegin(zsl);
+    zskiplistNode *x = zslGetNode(&it);
+    assert(zslNodeScore(x) == 1.0); x = zslNext(&it);
+    assert(zslNodeScore(x) == 2.5); x = zslNext(&it);
+    assert(zslNodeScore(x) == 3.0);
 
     zslfree(zsl);
     printf("   ✅\n");
@@ -306,13 +310,13 @@ static void test_zsl_by_rank(void)
         zslinsert(zsl, (double)(i * 10), mk(i));
 
     zskiplistNode *n = zslbyrank(zsl, 1);
-    assert(n != NULL && n->score == 0.0);
+    assert(n != NULL && zslNodeScore(n) == 0.0);
 
     n = zslbyrank(zsl, 5);
-    assert(n != NULL && n->score == 40.0);
+    assert(n != NULL && zslNodeScore(n) == 40.0);
 
     n = zslbyrank(zsl, 10);
-    assert(n != NULL && n->score == 90.0);
+    assert(n != NULL && zslNodeScore(n) == 90.0);
 
     /* 越界 */
     n = zslbyrank(zsl, 0);
@@ -361,10 +365,10 @@ static void test_zsl_range(void)
     zskiplistNode **arr = zslrange(zsl, 20.0, 50.0, &count);
     assert(arr != NULL);
     assert(count == 4);
-    assert(arr[0]->score == 20.0);
-    assert(arr[1]->score == 30.0);
-    assert(arr[2]->score == 40.0);
-    assert(arr[3]->score == 50.0);
+    assert(zslNodeScore(arr[0]) == 20.0);
+    assert(zslNodeScore(arr[1]) == 30.0);
+    assert(zslNodeScore(arr[2]) == 40.0);
+    assert(zslNodeScore(arr[3]) == 50.0);
     free(arr);
 
     /* 空范围 */
@@ -469,7 +473,7 @@ static void test_zset_add_find(void)
 
     zskiplistNode *n = zsetFind(zs, sdsnew("alice"));
     assert(n != NULL);
-    assert(n->score == 1.0);
+    assert(zslNodeScore(n) == 1.0);
 
     /* 不存在的 member */
     n = zsetFind(zs, sdsnew("bob"));
@@ -522,7 +526,7 @@ static void test_zset_add_update_score(void)
 
     zskiplistNode *n = zsetFind(zs, sdsnew("x"));
     assert(n != NULL);
-    assert(n->score == 20.0);       /* score 已更新 */
+    assert(zslNodeScore(n) == 20.0);       /* score 已更新 */
 
     /* rank 应该仍是 1（唯一元素） */
     assert(zsetRank(zs, sdsnew("x")) == 1);
@@ -631,8 +635,8 @@ static void test_zset_range(void)
     zskiplistNode **arr = zsetRange(zs, 30.0, 70.0, &count);
     assert(arr != NULL);
     assert(count == 5);   /* 30,40,50,60,70 */
-    assert(arr[0]->score == 30.0);
-    assert(arr[4]->score == 70.0);
+    assert(zslNodeScore(arr[0]) == 30.0);
+    assert(zslNodeScore(arr[4]) == 70.0);
     free(arr);
 
     zsetFree(zs);
@@ -678,10 +682,10 @@ static void test_zset_by_rank(void)
     }
 
     zskiplistNode *n = zsetByRank(zs, 1);
-    assert(n != NULL && n->score == 0.0);
+    assert(n != NULL && zslNodeScore(n) == 0.0);
 
     n = zsetByRank(zs, 3);
-    assert(n != NULL && n->score == 20.0);
+    assert(n != NULL && zslNodeScore(n) == 20.0);
 
     n = zsetByRank(zs, 0);
     assert(n == NULL);
