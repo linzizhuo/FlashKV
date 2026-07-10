@@ -55,7 +55,8 @@ int zsetAdd(zset *zs, double score, sds ele)
 
     if (old) {
         /* --- member 已存在 --- */
-        if (old->score == score) {
+        if (zslNodeScore(old) == score)
+        {
             /* score 相同 → 无操作 */
             sdsfree(ele);
             return 0;
@@ -63,7 +64,7 @@ int zsetAdd(zset *zs, double score, sds ele)
 
         /* score 不同 → 更新。顺序：先摘 dict entry，再删旧 skiplist node，最后插新。 */
         dictDelete(zs->dict, ele, (void *)&h);
-        zsldel(zs->zsl, old->score, old->ele);       /* 释放旧 sds + old node */
+        zsldel(zs->zsl, zslNodeScore(old), zslNodeEle(old)); /* 释放旧 sds + old node */
 
         zskiplistNode *node = zslinsert(zs->zsl, score, ele);
         if (!node) {
@@ -100,7 +101,7 @@ int zsetDel(zset *zs, sds ele)
 
     /* 顺序：先摘 dict（不 free key/val），再 free skiplist node */
     dictDelete(zs->dict, ele, (void *)&h);
-    zsldel(zs->zsl, node->score, node->ele);
+    zsldel(zs->zsl, zslNodeScore(node), zslNodeEle(node));
 
     return 1;
 }
@@ -119,7 +120,7 @@ unsigned long zsetRank(zset *zs, sds ele)
 {
     zskiplistNode *node = zsetFind(zs, ele);
     if (!node) return 0;
-    return zslrank(zs->zsl, node->score, ele);
+    return zslrank(zs->zsl, zslNodeScore(node), ele);
 }
 
 zskiplistNode *zsetByRank(zset *zs, unsigned long rank)
@@ -131,33 +132,27 @@ unsigned long zsetCount(zset *zs, double min, double max)
 {
     return zslcount(zs->zsl, min, max);
 }
-
 unsigned long zsetDelRange(zset *zs, double min, double max)
 {
-    if (!zs || min > max) return 0;
+    if (!zs || min > max)
+        return 0;
 
-    /* 遍历 L0 score 区间，逐一调用 zsetDel 同步清理 dict+skiplist */
-    zskiplistNode *x = zs->zsl->header;
-    for (int i = zs->zsl->level - 1; i >= 0; i--) {
-        while (x->level[i].forward && x->level[i].forward->score < min)
-            x = x->level[i].forward;
-    }
-    x = x->level[0].forward;
+    /* 第一遍：zslrange 定位 + 删 dict entries */
+    unsigned long count = 0;
+    zskiplistNode **nodes = zslrange(zs->zsl, min, max, &count);
+    if (!count)
+        return 0;
 
-    unsigned long removed = 0;
-    while (x && x->score <= max) {
-        zskiplistNode *next = x->level[0].forward;
-        sds member = x->ele;
-
-        /* 先摘 dict entry，再删 skiplist node（zsldel 内部 free sds+node） */
+    for (unsigned long i = 0; i < count; i++)
+    {
+        sds member = zslNodeEle(nodes[i]);
         hash_t h = sdsHash(member);
         dictDelete(zs->dict, member, (void *)&h);
-        zsldel(zs->zsl, x->score, member);
-
-        removed++;
-        x = next;
     }
-    return removed;
+    free(nodes);
+
+    /* 第二遍：zsldelrange 批量清扫 skiplist */
+    return zsldelrange(zs->zsl, min, max);
 }
 
 unsigned long zsetLen(zset *zs)

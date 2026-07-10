@@ -519,7 +519,7 @@ static void zscoreCommand(Connection *c, struct service *svc,
             addReplyNull(c);
         } else {
             char tmp[64];
-            int len = snprintf(tmp, sizeof(tmp), "%.17g", n->score);
+            int len = snprintf(tmp, sizeof(tmp), "%.17g", zslNodeScore(n));
             addReplyBulkString(c, tmp, (size_t)len);
         }
     }
@@ -594,10 +594,10 @@ static void zrangeCommand(Connection *c, struct service *svc,
         zskiplistNode **nodes = zsetRange(zs, min, max, &count);
         addReplyArray(c, withscores ? count * 2 : count);
         for (unsigned long i = 0; i < count; i++) {
-            addReplyBulkSds(c, nodes[i]->ele);
+            addReplyBulkSds(c, zslNodeEle(nodes[i]));
             if (withscores) {
                 char tmp[64];
-                int n = snprintf(tmp, sizeof(tmp), "%.17g", nodes[i]->score);
+                int n = snprintf(tmp, sizeof(tmp), "%.17g", zslNodeScore(nodes[i]));
                 addReplyBulkString(c, tmp, (size_t)n);
             }
         }
@@ -633,13 +633,14 @@ static void zrangeCommand(Connection *c, struct service *svc,
 
     zskiplistNode *x = zsetByRank(zs, (unsigned long)(start + 1));
     for (unsigned long i = 0; i < count && x; i++) {
-        addReplyBulkSds(c, x->ele);
+        addReplyBulkSds(c, zslNodeEle(x));
         if (withscores) {
             char tmp[64];
-            int n = snprintf(tmp, sizeof(tmp), "%.17g", x->score);
+            int n = snprintf(tmp, sizeof(tmp), "%.17g", zslNodeScore(x));
             addReplyBulkString(c, tmp, (size_t)n);
         }
-        x = x->level[0].forward;
+        zslIterator zi = zslGetIterator(x);
+        x = zslNext(&zi);
     }
     sdsfree(key);
 }

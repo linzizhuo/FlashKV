@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include "config.h"
-
+#include "string.h"
 typedef struct
 {
     enum DataType type;
@@ -17,7 +17,10 @@ typedef struct
         zset *zs; // zset: dict + skip list of (score, sds) pairs
     } val;
 } ValObj;
+/*
 
+
+*/
 static inline size_t valObjSerialize(const ValObj *val, void **buf)
 {
     if (!val || !buf)
@@ -27,7 +30,9 @@ static inline size_t valObjSerialize(const ValObj *val, void **buf)
     case DATA_STRING:
         return sdsSerialize(val->val.str, buf);
     case DATA_INT:
-        /* 内联: 直接写 8 字节 long long */
+        buf = malloc(sizeof(long long));
+        memcpy(*buf, &val->val.ll, sizeof(long long));
+        return sizeof(long long);
         return 0;
     case DATA_ZSET:
         /* zsetSerialize */
@@ -45,13 +50,51 @@ static inline size_t valObjSerialize(const ValObj *val, void **buf)
         return 0;
     }
 }
-
-static inline ValObj *valObjDeserialize(const void *buf)
+/*
+    反序列化，根据 type 调用对应的反序列化函数
+    buf 只含类型特定数据，不含 type 字节
+    返回新 ValObj（调用方 valObjFree 释放），失败返回 NULL
+*/
+static inline ValObj *valObjDeserialize(int type, const void *buf)
 {
     if (!buf)
         return NULL;
-    const unsigned char *p = buf;
-    int type = p[0]; // 获取类型
+
+    ValObj *o = malloc(sizeof(*o));
+    if (!o)
+        return NULL;
+    o->type = (enum DataType)type;
+
+    switch (o->type)
+    {
+    case DATA_STRING:
+        o->val.str = sdsDeserialize(buf);
+        if (!o->val.str)
+        {
+            free(o);
+            return NULL;
+        }
+        return o;
+    case DATA_INT:
+        memcpy(&o->val.ll, buf, sizeof(long long));
+        return o;
+    case DATA_ZSET:
+        /* o->val.zs = zsetDeserialize(buf); */
+        break;
+    case DATA_LIST:
+        /* o->val.l = listDeserialize(buf); */
+        break;
+    case DATA_SET:
+        /* setDeserialize */
+        break;
+    case DATA_HASH:
+        /* hashDeserialize */
+        break;
+    default:
+        break;
+    }
+    free(o);
+    return NULL;
 }
 /* ---- ZSET helpers ---- */
 static inline ValObj *valObjCreateZset(void)
