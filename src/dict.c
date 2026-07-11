@@ -6,14 +6,6 @@
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #include "config.h" 
 
-typedef struct dictIterator
-{
-    struct dict *d;
-    int table;               /* 0=ht[0], 1=ht[1] */
-    unsigned long index;     /* 当前桶下标 */
-    struct dictEntry *entry; /* 当前链节点 */
-} dictIterator;
-
 static void dicthtfree(struct dict *d, struct dictht *dht);
 
 static inline int dictIsRehashing(const struct dict *d)
@@ -511,18 +503,14 @@ static dictEntry *dictScanToNext(dictIterator *di)
         }
     }
 }
-dictIterator *dictGetBegin(struct dict *d)
+dictIterator dictGetBegin(struct dict *d)
 {
-    dictIterator *di = malloc(sizeof(*di));
-    if (!di)
-        return NULL;
-    di->d = d;
-    di->table = 0;
-    di->index = 0;
-    di->entry = NULL;
-
-    /* 定位到第一个有效 entry */
-    di->entry = dictScanToNext(di);
+    dictIterator di;
+    di.d = d;
+    di.table = 0;
+    di.index = 0;
+    di.entry = NULL;
+    di.entry = dictScanToNext(&di);
     return di;
 }
 /* 从迭代器当前位置出发，找到下一个有效 entry。
@@ -543,7 +531,7 @@ dictEntry *dictNext(dictIterator *di)
     di->entry = dictScanToNext(di);
     return di->entry;
 }
-void dictFreeIterator(dictIterator *di) { free(di); }
+// void dictFreeIterator(dictIterator *di) { free(di); }
 
 dictEntry *dictGetEntry(dictIterator *di)
 {

@@ -16,12 +16,10 @@ static int rdbSaveData(Io *io, kvdb *kv)
     if (!dict)
         return ERR;
 
-    dictIterator *di = dictGetBegin(dict);
-    if (!di)
-        return ERR;
+    dictIterator di = dictGetBegin(dict);
 
     dictEntry *de;
-    while ((de = dictGetEntry(di)) != NULL)
+    while ((de = dictGetEntry(&di)) != NULL)
     {
         sds key = dictEntryGetKey(de);
         ValObj *val = dictEntryGetVal(dict, de);
@@ -54,14 +52,11 @@ static int rdbSaveData(Io *io, kvdb *kv)
         if (dict->type->valWrite(io, val) == ERR)
             goto err;
 
-        dictNext(di);
+        dictNext(&di);
     }
-
-    dictFreeIterator(di);
+    
     return OK;
-
 err:
-    dictFreeIterator(di);
     return ERR;
 }
 
