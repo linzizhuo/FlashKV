@@ -74,7 +74,6 @@ size_t sdslen(const sds str)
 {
     return SDS_HDR(64, str)->len;
 }
-
 /* 使用MurmurHash2算法，快，均匀 */
 uint64_t sdsHash(const void *key)
 {
@@ -129,4 +128,25 @@ uint64_t sdsHash(const void *key)
     h *= m;
     h ^= h >> r;
     return h;
+}
+
+int sdsWrite(Io *io, sds s)
+{
+    uint32_t len = (uint32_t)sdslen(s);
+    int rc;
+
+    /* 写 4B 长度 */
+    rc = addIo(io, (const char *)&len, 4);
+    if (rc != 4)
+        return ERR;
+
+    /* 写数据 */
+    if (len > 0)
+    {
+        rc = addIo(io, s, len);
+        if (rc != (int)len)
+            return ERR;
+    }
+
+    return (int)(4 + len);
 }

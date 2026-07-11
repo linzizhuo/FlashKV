@@ -1,5 +1,5 @@
 #include <stdlib.h>
-
+#include <string.h>
 #include "zskiplist.h"
 
 /* score 边界类型（zslRankScore 用） */
@@ -394,4 +394,23 @@ size_t zslNodeSerialize(const zskiplistNode *node, void **buf)
     /* 返回 */
     *buf = p;
     return total;
+}
+
+int zslNodeWrite(Io *io, const zskiplistNode *node)
+{
+    if (!io || !node)
+        return ERR;
+
+    /* 8B score */
+    double score = zslNodeScore(node);
+    int rc = addIo(io, (const char *)&score, 8);
+    if (rc != 8)
+        return ERR;
+
+    /* member: sds [4B len][data] */
+    rc = sdsWrite(io, zslNodeEle(node));
+    if (rc == ERR)
+        return ERR;
+
+    return 8 + rc; /* score + member */
 }

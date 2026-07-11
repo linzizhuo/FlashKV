@@ -17,10 +17,38 @@ typedef struct
         zset *zs; // zset: dict + skip list of (score, sds) pairs
     } val;
 } ValObj;
-/*
 
+static inline int valObjWrite(Io *io, const ValObj *val)
+{
+    if (!io || !val)
+        return ERR;
 
-*/
+    switch (val->type)
+    {
+    case DATA_STRING:
+        return sdsWrite(io, val->val.str);
+    case DATA_INT:
+    {
+        long long ll = val->val.ll;
+        int rc = addIo(io, (const char *)&ll, sizeof(ll));
+        return rc == sizeof(ll) ? (int)sizeof(ll) : ERR;
+    }
+    case DATA_ZSET:
+        return zsetWrite(io, val->val.zs);
+    case DATA_LIST:
+        /* return listWrite(io, val->val.l); */
+        return ERR;
+    case DATA_SET:
+        /* return setWrite(io, val->val.s); */
+        return ERR;
+    case DATA_HASH:
+        /* return hashWrite(io, val->val.h); */
+        return ERR;
+    default:
+        return ERR;
+    }
+}
+
 static inline size_t valObjSerialize(const ValObj *val, void **buf)
 {
     if (!val || !buf)
