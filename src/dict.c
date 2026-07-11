@@ -544,3 +544,8 @@ dictEntry *dictNext(dictIterator *di)
     return di->entry;
 }
 void dictFreeIterator(dictIterator *di) { free(di); }
+
+dictEntry *dictGetEntry(dictIterator *di)
+{
+    return di ? di->entry : NULL;
+}

@@ -2,6 +2,7 @@
 #define _SDS_H
 #include <stddef.h>
 #include <stdint.h>
+#include "io.h"
 typedef char* sds;
 
 struct __attribute__((__packed__)) sdshdr64
@@ -22,8 +23,16 @@ uint64_t sdsHash(const void *key);
 int sdsCompare(const void* key1, const void* key2);
 size_t sdslen(const sds str);
 void sdsfree(void *s);
+
+/*
+    实际上并未使用过上述函数，留着算是预留接口
+*/
 size_t sdsSerialize(const sds s, void **buf);
 /* 从 [4B len] [data] 格式反序列化回 sds。
  * 返回 = 新 sds，调用方负责 sdsfree()。 */
 sds sdsDeserialize(const void *buf);
+/*
+    rdb的真正方式
+*/
+int sdsWrite(Io *io, sds s); /* [4B len][data] 直接进 io */
 #endif

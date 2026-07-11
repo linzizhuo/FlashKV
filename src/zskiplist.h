@@ -61,7 +61,7 @@ zskiplistNode **zslrange(zskiplist *zsl, double min, double max,
 // size_t zslSerialize(const zskiplist *zsl, void **buf);
 // zskiplist *zslDeserialize(const void *buf);
 
-/* buf不能传非空指针，否则会内存泄漏 */
-size_t zslNodeSerialize(const zskiplistNode *node, void **buf);
+/* 旧：size_t zslNodeSerialize(const zskiplistNode *node, void **buf); */
+int zslNodeWrite(Io *io, const zskiplistNode *node); /* [8B score][sdsWrite member] */
 
 #endif

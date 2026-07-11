@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "io.h"
 #define DICT_END NULL
 /*
     "信任程序员，不给不需要的东西付代价"
@@ -25,11 +26,16 @@ struct dictType{
     void (*valFree)(void *val);
     void *(*valGet)(struct dictEntry *entry); // 取值策略
 
-    /* ---- 序列化（RDB 用）---- */
-    size_t (*keySerialize)(const void *key, void **buf); /* 返回总字节数，*buf=malloc */
-    void    *(*keyDeserialize)(const void *buf);            /* 返回新 key 对象 */
-    size_t (*valSerialize)(const void *val, void **buf);    /* 同上 */
-    void *(*valDeserialize)(int type, const void *buf);     /* 返回新 val 对象 */
+    // /* ---- 序列化（RDB 用）已弃用 ---- */
+    // size_t (*keySerialize)(const void *key, void **buf); /* 返回总字节数，*buf=malloc */
+    // void    *(*keyDeserialize)(const void *buf);            /* 返回新 key 对象 */
+    // size_t (*valSerialize)(const void *val, void **buf);    /* 同上 */
+    // void *(*valDeserialize)(int type, const void *buf);     /* 返回新 val 对象 */
+    /* ---- 持久化（RDB 用）---- */
+    int (*keyWrite)(Io *io, const void *key);           /* key → io，返回字节数或 ERR */
+    void *(*keyDeserialize)(const void *buf);           /* 返回新 key 对象 */
+    int (*valWrite)(Io *io, const void *val);           /* val → io，返回字节数或 ERR */
+    void *(*valDeserialize)(int type, const void *buf); /* 返回新 val 对象 */
 };
 
 /*
@@ -44,11 +50,12 @@ struct dict
 };
 
 /* ---- 迭代器（供 RDB/AOF 等模块遍历全表）---- */
-
 typedef struct dictIterator dictIterator; /* 迭代器，不暴露 */
 dictIterator *dictGetBegin(struct dict *d); 
 dictEntry *dictNext(dictIterator *di);/* 返回下一个元素，定义指向空的迭代器没有Next，避免迭代器乱飘*/
 void dictFreeIterator(dictIterator *di);
+dictEntry *dictGetEntry(dictIterator *di); /* 返回当前元素，不前进 */
+
 /*
     函数设计目标：核心就是dict模块，不会引入一些其他的模块强加依赖，做到松耦合。
 */
@@ -70,4 +77,5 @@ int  dictExpand(struct dict *d, unsigned long n);      /* 扩/缩至 2^n，n 与
 int  dictShrink(struct dict *d);                       /* 缩至 >= used 的最小尺寸 */
 int  dictNeedsResize(const struct dict *d);            /* size > used*10 且 size > 4 */
 unsigned long dictSlots(const struct dict *d);         /* bucket 槽位总数 */
+
 #endif

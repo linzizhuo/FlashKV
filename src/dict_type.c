@@ -1,6 +1,7 @@
 #include"dict_type.h"
 #include "sds.h"
 #include "val_obj.h"
+#include "io.h"
 
 struct dictType dictTypeSds = {
     .hash = sdsHash,
@@ -9,13 +10,12 @@ struct dictType dictTypeSds = {
     .valFree = valObjFree,
     .valGet = dictValGetPtr,
 
-    /* 序列化 */
-    .keySerialize = (size_t (*)(const void *, void **))sdsSerialize,
+    /* 持久化 */
+    .keyWrite = (int (*)(Io *, const void *))sdsWrite,
     .keyDeserialize = (void *(*)(const void *))sdsDeserialize,
-    .valSerialize = (size_t (*)(const void *, void **))valObjSerialize,
+    .valWrite = (int (*)(Io *, const void *))valObjWrite,
     .valDeserialize = (void *(*)(int, const void *))valObjDeserialize,
 };
-
 struct dictType dictTTL = {
     .hash = sdsHash,
     .keyCompare = sdsCompare,
@@ -23,8 +23,8 @@ struct dictType dictTTL = {
     .valFree = NULL,
     .valGet = dictValGetRef,
 
-    /* 序列化 */
-    .keySerialize = (size_t (*)(const void *, void **))sdsSerialize,
-    .keyDeserialize = (void *(*)(const void *))sdsDeserialize,
-    /* valSerialize/valDeserialize 暂不设 — TTL 的 val 是 timestamp，格式不同 */
+    // /* 持久化 */
+    // .keyWrite = (int (*)(Io *, const void *))sdsWrite,
+    // .keyDeserialize = (void *(*)(const void *))sdsDeserialize,
+    /* valWrite/valDeserialize 暂不设 — TTL 的 val 是 timestamp，格式不同 */
 };

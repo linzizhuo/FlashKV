@@ -164,3 +164,26 @@ zskiplistNode **zsetRange(zset *zs, double min, double max, unsigned long *count
 {
     return zslrange(zs->zsl, min, max, count);
 }
+
+int zsetWrite(Io *io, zset *zs)
+{
+    if (!io || !zs)
+        return ERR;
+
+    uint32_t count = (uint32_t)zsetLen(zs);
+    int rc = addIo(io, (const char *)&count, 4);
+    if (rc != 4)
+        return ERR;
+
+    int total = 4;
+
+    zslIterator it = zslGetBegin(zs->zsl);
+    zskiplistNode *node;
+    while ((node = zslGetNode(&it)) != NULL)
+    {
+        zslNodeWrite(io, node);
+        zslNext(&it); // 取完再前进
+    }
+
+    return total;
+}

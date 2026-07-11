@@ -4,6 +4,8 @@
 #include <sys/stat.h> /* mode_t */
 #include "config.h"
 #include <fcntl.h>    /* O_WRONLY, O_CREAT, O_RDONLY... */
+/* 零拷贝路径：getbufIo → 直接写 buf → commitIo 提交 */
+#define commitIo(io, n) ((io)->idx += (n))
 
 typedef struct Io
 {

@@ -11,3 +11,5 @@ test_dict_dbg
 .claude/
 *.o
 .vscode
+test_rdb
+test_iter
