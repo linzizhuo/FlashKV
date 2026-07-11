@@ -12,4 +12,4 @@ test_dict_dbg
 *.o
 .vscode
 test_rdb
-test_iterdump.rdb
+*.rdb
