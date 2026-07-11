@@ -84,4 +84,9 @@ int  dictShrink(struct dict *d);                       /* 缩至 >= used 的最�
 int  dictNeedsResize(const struct dict *d);            /* size > used*10 且 size > 4 */
 unsigned long dictSlots(const struct dict *d);         /* bucket 槽位总数 */
 
+/* 返回 dict 中实际 entry 总数（兼容 rehash） */
+static inline unsigned long dictSize(const struct dict *d)
+{
+    return d->ht[0].used + (d->rehashidx != -1 ? d->ht[1].used : 0);
+}
 #endif

@@ -16,6 +16,10 @@ static int rdbSaveData(Io *io, kvdb *kv)
     if (!dict)
         return ERR;
 
+    uint32_t key_count = (uint32_t)dictSize(dict);
+    if (addIo(io, (const char *)&key_count, sizeof(key_count)) != sizeof(key_count))
+        return ERR;
+
     dictIterator di = dictGetBegin(dict);
 
     dictEntry *de;
@@ -91,7 +95,7 @@ int rdbSave(kvdb *kv, const char *filename)
         goto err;
 
     /* 刷盘 + 原子 rename */
-    if (flushIo(io) != OK)
+    if (flushIo(io, FLUSH_WRITE) != OK)
         goto err;
 
     freeIo(io);
@@ -143,7 +147,7 @@ int rdbSaveAll(kvdb **kvs, unsigned int dbsize, const char *filename)
     }
 
     /* 刷盘 + 原子 rename */
-    if (flushIo(io) != OK)
+    if (flushIo(io, FLUSH_WRITE) != OK)
         goto err;
 
     freeIo(io);
