@@ -10,6 +10,9 @@ SDS_SRC = src/sds.c
 test_sds: tests/test_sds.c $(SDS_SRC)
 	$(CC) $(CFLAGS) -I src -o $@ $^
 
+test_io: tests/test_io.c src/io.c
+	$(CC) $(CFLAGS) -I src -o $@ $^
+
 # ---------- Dict + KVDB（C 实现） ----------
 
 DICT_SRC  = src/dict.c src/dict_type.c

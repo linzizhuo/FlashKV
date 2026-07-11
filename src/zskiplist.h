@@ -58,8 +58,10 @@ zskiplistNode **zslrange(zskiplist *zsl, double min, double max,
                          unsigned long *count);
 
 /* ---- 序列化（RDB 用）---- */
-size_t zslSerialize(const zskiplist *zsl, void **buf);
-zskiplist *zslDeserialize(const void *buf);
+// size_t zslSerialize(const zskiplist *zsl, void **buf);
+// zskiplist *zslDeserialize(const void *buf);
 
+/* buf不能传非空指针，否则会内存泄漏 */
+size_t zslNodeSerialize(const zskiplistNode *node, void **buf);
 
 #endif
