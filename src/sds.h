@@ -35,4 +35,6 @@ sds sdsDeserialize(const void *buf);
     rdb的真正方式
 */
 int sdsWrite(Io *io, sds s); /* [4B len][data] 直接进 io */
+int sdsRead(Io *io, sds *s); // 读：返回字节数或 ERR，sds 由 *s 带出
+
 #endif

@@ -48,4 +48,7 @@ enum DataType
 #define ACTIVE_EXPIRE_TIME_LIMIT 1000 /* 单次最大耗时 (us)，避免阻塞事件循环 */
 
 #define SERVER_PORT 6379
+
+#define FLUSH_READ 1
+#define FLUSH_WRITE 0
 #endif
