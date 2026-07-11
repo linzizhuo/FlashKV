@@ -18,9 +18,3 @@ int getbufIo(Io* io, int**buf) // 返回值：-1 ERR，正数是长度，回调�
 void addIo(Io *io, size_t n);        /* 提交 n 字节，idx += n */
 /* 刷新 — idx 归零，脏数据写盘 */
 int  flushIo(Io *io);                /* write(fd, buf, idx)，成功返回 0 */
-
-
-使用方法：
-    要写入的数据....
-    拷贝到buf中
-    若buf满了，手动刷新缓冲区，信任程序员的，因此使用方式比较简单。特殊场景可以配置专门的宏规范使用。
