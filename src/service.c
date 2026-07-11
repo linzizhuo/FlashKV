@@ -8,7 +8,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
-
+#include "rdb.h"
+#include <unistd.h>
 /* ================================================================
  *  RESP 响应写入（追加模式，支持 pipeline）
  *
@@ -757,33 +758,77 @@ static void zremrangebyscoreCommand(Connection *c, struct service *svc,
 }
 
 /* ================================================================
+ *  命令：SAVE / BGSAVE
+ *
+ *  SAVE   — 阻塞当前线程，同步持久化到磁盘
+ *  BGSAVE — fork 子进程异步写盘，主线程立即返回
+ * ================================================================ */
+
+static void saveCommand(Connection *c, struct service *svc,
+                        RespObj *argv, int argc)
+{
+    (void)argv;
+    (void)argc;
+
+    if (rdbSaveAll(svc->kvs, svc->dbsize, "dump.rdb") != 0)
+    {
+        addReplyError(c, "RDB save failed");
+        return;
+    }
+    addReplyOK(c);
+}
+
+static void bgsaveCommand(Connection *c, struct service *svc,
+                          RespObj *argv, int argc)
+{
+    (void)argv;
+    (void)argc;
+
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        addReplyError(c, "fork failed");
+        return;
+    }
+    if (pid == 0)
+    {
+        /* 子进程 */
+        _exit(rdbSaveAll(svc->kvs, svc->dbsize, "dump.rdb") == OK ? 0 : 1);
+    }
+    /* 父进程 */
+    addReplyOK(c);
+}
+
+/* ================================================================
  *  命令表
  *
  *  按字典序排列，供 bsearch 二分查找。
  * ================================================================ */
 
 static Command cmd_table[] = {
-    {"DEL",             1,  delCommand},
-    {"EXISTS",          1,  existsCommand},
-    {"EXPIRE",          2,  expireCommand},
-    {"EXPIREAT",        2,  expireatCommand},
-    {"GET",             1,  getCommand},
-    {"PERSIST",         1,  persistCommand},
-    {"PEXPIRE",         2,  pexpireCommand},
-    {"PEXPIREAT",       2,  pexpireatCommand},
-    {"PING",            0,  pingCommand},
-    {"PTTL",            1,  pttlCommand},
-    {"SELECT",          1,  selectCommand},
-    {"SET",             2,  setCommand},
-    {"TTL",             1,  ttlCommand},
-    {"ZADD",            3,  zaddCommand},
-    {"ZCARD",           1,  zcardCommand},
-    {"ZCOUNT",          3,  zcountCommand},
-    {"ZRANGE",         -1,  zrangeCommand},
-    {"ZRANK",           2,  zrankCommand},
-    {"ZREM",            2,  zremCommand},
-    {"ZREMRANGEBYSCORE",3,  zremrangebyscoreCommand},
-    {"ZSCORE",          2,  zscoreCommand},
+    {"BGSAVE", 0, bgsaveCommand},
+    {"DEL", 1, delCommand},
+    {"EXISTS", 1, existsCommand},
+    {"EXPIRE", 2, expireCommand},
+    {"EXPIREAT", 2, expireatCommand},
+    {"GET", 1, getCommand},
+    {"PERSIST", 1, persistCommand},
+    {"PEXPIRE", 2, pexpireCommand},
+    {"PEXPIREAT", 2, pexpireatCommand},
+    {"PING", 0, pingCommand},
+    {"PTTL", 1, pttlCommand},
+    {"SAVE", 0, saveCommand},
+    {"SELECT", 1, selectCommand},
+    {"SET", 2, setCommand},
+    {"TTL", 1, ttlCommand},
+    {"ZADD", 3, zaddCommand},
+    {"ZCARD", 1, zcardCommand},
+    {"ZCOUNT", 3, zcountCommand},
+    {"ZRANGE", -1, zrangeCommand},
+    {"ZRANK", 2, zrankCommand},
+    {"ZREM", 2, zremCommand},
+    {"ZREMRANGEBYSCORE", 3, zremrangebyscoreCommand},
+    {"ZSCORE", 2, zscoreCommand},
 };
 
 static int cmdCompare(const void *key, const void *elem)

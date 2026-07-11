@@ -34,7 +34,8 @@ bench_server: tests/bench_server.c
 # ---------- 服务端 ----------
 
 SERVER_SRC = src/main.c src/server.c src/log.c src/service.c \
-             src/kvdb.c src/dict.c src/dict_type.c src/resp.c src/sds.c src/zskiplist.c src/zset.c
+             src/kvdb.c src/dict.c src/dict_type.c src/resp.c src/sds.c src/zskiplist.c src/zset.c \
+             src/rdb.c src/io.c
 SERVER_DEPS = src/server.h src/log.h src/service.h src/kvdb.h \
               src/dict.h src/dict_type.h src/resp.h src/sds.h src/val_obj.h src/ttl.h src/zskiplist.h src/zset.h
 
