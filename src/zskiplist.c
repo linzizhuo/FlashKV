@@ -371,3 +371,27 @@ zskiplistNode **zslrange(zskiplist *zsl, double min, double max,
 
     return arr;
 }
+
+size_t zslNodeSerialize(const zskiplistNode *node, void **buf)
+{
+    if (!node || !buf)
+        return 0;
+    /* 先计算总长度，len = score + 4 + sdslen */
+    size_t ele_len = sdslen(node->ele);
+    size_t total = sizeof(double) + 4 + ele_len; /* score + 4B len + ele data */
+    /* malloc(len)*/
+    unsigned char *p = malloc(total);
+    if (!p)
+    {
+        *buf = NULL;
+        return 0;
+    }
+    /* 写入缓冲区 */
+    memcpy(p, &node->score, 8); /* score */
+    memcpy(p + 8, &ele_len, 4); /* sds 长度 */
+    if (ele_len > 0)
+        memcpy(p + 12, node->ele, ele_len); /* ele 数据 */
+    /* 返回 */
+    *buf = p;
+    return total;
+}
