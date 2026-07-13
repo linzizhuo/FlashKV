@@ -150,3 +150,33 @@ int sdsWrite(Io *io, sds s)
 
     return (int)(4 + len);
 }
+
+int sdsRead(Io *io, sds *s)
+{
+    uint32_t len;
+    int rc;
+
+    /* 读 4B 长度 */
+    rc = readIo(io, (char *)&len, 4);
+    if (rc != OK)
+        return ERR;
+
+    /* 分配 sds */
+    *s = sdsnewlen(NULL, len);
+    if (*s == NULL)
+        return ERR;
+
+    /* 读数据 */
+    if (len > 0)
+    {
+        rc = readIo(io, *s, len);
+        if (rc != OK)
+        {
+            sdsfree(*s);
+            *s = NULL;
+            return ERR;
+        }
+    }
+
+    return (int)(4 + len);
+}

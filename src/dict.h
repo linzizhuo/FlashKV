@@ -33,9 +33,13 @@ struct dictType{
     // void *(*valDeserialize)(int type, const void *buf);     /* 返回新 val 对象 */
     /* ---- 持久化（RDB 用）---- */
     int (*keyWrite)(Io *io, const void *key);           /* key → io，返回字节数或 ERR */
-    void *(*keyDeserialize)(const void *buf);           /* 返回新 key 对象 */
+    // void *(*keyDeserialize)(const void *buf);           /* 返回新 key 对象 */
     int (*valWrite)(Io *io, const void *val);           /* val → io，返回字节数或 ERR */
-    void *(*valDeserialize)(int type, const void *buf); /* 返回新 val 对象 */
+    int (*keyRead)(Io *io, void **key);                 /* io → *key */
+
+    int (*valRead)(Io *io, int type, void **val); /* io → *val，type 用于分派 */
+
+    // void *(*valDeserialize)(int type, const void *buf); /* 返回新 val 对象 */
 };
 
 /*
@@ -84,9 +88,20 @@ int  dictShrink(struct dict *d);                       /* 缩至 >= used 的最�
 int  dictNeedsResize(const struct dict *d);            /* size > used*10 且 size > 4 */
 unsigned long dictSlots(const struct dict *d);         /* bucket 槽位总数 */
 
+hash_t dictEntryGetHash(const dictEntry *de);
+
+/* 将一条 entry 按 RDB 格式写入 io：type(1B) + key + [expire(8B)] + val
+   expires 可为 NULL；内部通过 dict->type->keyWrite/valWrite 完成序列化 */
+int dictEntryWrite(Io *io, struct dict *d, const dictEntry *de);
+
+/* 从 io 读回 key + val，type 用于 val 分派（对应 RDB type byte 的低 7 位） */
+int dictEntryRead(Io *io, struct dict *d, int type, dictEntry** de);
+
 /* 返回 dict 中实际 entry 总数（兼容 rehash） */
 static inline unsigned long dictSize(const struct dict *d)
 {
     return d->ht[0].used + (d->rehashidx != -1 ? d->ht[1].used : 0);
 }
+
+int dictAddEntry(struct dict *d, dictEntry *de);
 #endif

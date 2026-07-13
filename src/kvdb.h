@@ -28,6 +28,8 @@ ValObj *kvdbSet(kvdb *kv, sds key, ValObj *val);             /* 接管 key，返
 int     kvdbDel(kvdb *kv, const void *key);        /* 1=删除成功 0=不存在 */
 int     kvdbExists(kvdb *kv, const void *key);     /* 1=存在 0=不存在 */
 
+
+
 /* ---- TTL ---- */
 int       kvdbExpire(kvdb *kv, const void *key, time_t when); /* 1=成功 0=key不存在 */
 long long kvdbTTL(kvdb *kv, const void *key);      /* -2=不存在 -1=无TTL ≥0=剩余秒 */
@@ -54,8 +56,5 @@ zset *kvdbGetOrCreateZset(kvdb *kv, sds key);
 // /* 遍历 kvdb 中所有 key，对每个 key 调用 fn。
 //  * expire=0 表示无 TTL。privdata 透传给 fn（如 RDB 的 fd）。 */
 // void kvdbScan(kvdb *kv, kvdbVisitor* fn);
-
-
-
 
 #endif

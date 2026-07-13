@@ -770,7 +770,7 @@ static void saveCommand(Connection *c, struct service *svc,
     (void)argv;
     (void)argc;
 
-    if (rdbSaveAll(svc->kvs, svc->dbsize, "dump.rdb") != 0)
+    if (rdbSaveAll(svc->kvs, svc->dbsize, RDB_FILENAME) != 0)
     {
         addReplyError(c, "RDB save failed");
         return;
@@ -793,7 +793,7 @@ static void bgsaveCommand(Connection *c, struct service *svc,
     if (pid == 0)
     {
         /* 子进程 */
-        _exit(rdbSaveAll(svc->kvs, svc->dbsize, "dump.rdb") == OK ? 0 : 1);
+        _exit(rdbSaveAll(svc->kvs, svc->dbsize, RDB_FILENAME) == OK ? 0 : 1);
     }
     /* 父进程 */
     addReplyOK(c);
@@ -878,6 +878,17 @@ int processCommand(Connection *c, struct service *svc,
 int serviceInit(struct service *svc, unsigned int dbsize)
 {
     if (!svc || dbsize == 0) return ERR;
+
+#if RDB_LOAD_ENABLED
+    /* 尝试从 RDB 文件恢复 */
+    int count = rdbLoad(&svc->kvs, RDB_FILENAME);
+    if (count >= 0)
+    {
+        svc->dbsize = (unsigned int)count;
+        return OK;
+    }
+    /* 文件不存在或损坏，fallthrough 到空库初始化 */
+#endif
 
     svc->dbsize = dbsize;
     svc->kvs = calloc(dbsize, sizeof(kvdb *));

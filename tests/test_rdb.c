@@ -71,6 +71,14 @@ int main(void) {
     assert(readn(fd, &u32, 4) == 0);
     assert(u32 == RDB_VERSION);
 
+    /* dbcount */
+    assert(readn(fd, &u32, 4) == 0);
+    assert(u32 == 1);
+
+    /* key_count */
+    assert(readn(fd, &u32, 4) == 0);
+    assert(u32 == 3);
+
     int found = 0;
 
     while (readn(fd, &u8, 1) == 0) {
@@ -84,18 +92,18 @@ int main(void) {
         keybuf[u32] = '\0';
         fprintf(stderr, "entry: key='%s' type=%d expire=%d\n", keybuf, dtype, has_expire);
 
-        /* expire */
-        if (has_expire) assert(readn(fd, &u64, 8) == 0);
-
         if (strcmp(keybuf, "k1") == 0) {
             assert(!has_expire && dtype == DATA_STRING);
             assert(readn(fd, &u32, 4) == 0); assert(u32 == 5);
             assert(readn(fd, buf, 5) == 0); assert(memcmp(buf, "hello", 5) == 0);
             found |= 1;
         } else if (strcmp(keybuf, "k2") == 0) {
-            assert(has_expire && u64 == 2000000000ULL && dtype == DATA_INT);
+            assert(has_expire && dtype == DATA_INT);
             long long ll;
             assert(readn(fd, &ll, 8) == 0); assert(ll == 99);
+            /* expire after val (wire format: type → key → val → expire) */
+            assert(readn(fd, &u64, 8) == 0);
+            assert(u64 == 2000000000ULL);
             found |= 2;
         } else if (strcmp(keybuf, "k3") == 0) {
             assert(!has_expire && dtype == DATA_ZSET);

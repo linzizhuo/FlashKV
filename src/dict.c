@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #define ROTL64(x, r) (((x) << (r)) | ((x) >> (64 - (r))))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
-#include "config.h" 
+#include "config.h"
 
 static void dicthtfree(struct dict *d, struct dictht *dht);
 
@@ -29,6 +29,9 @@ static dictEntry *dictEntryNew(hash_t hash, void *key, void *val, struct dictEnt
     entry->next = next;
     return entry;
 }
+
+hash_t dictEntryGetHash(const dictEntry *de) { return de->hash; }
+
 // static uint64_t dictHash(const struct dict *d, const void *key)
 // {
 //     /* 暂时逻辑是固定的，后面写了泛型会调用泛型中的函数，保证扩展性。 */
@@ -536,4 +539,53 @@ dictEntry *dictNext(dictIterator *di)
 dictEntry *dictGetEntry(dictIterator *di)
 {
     return di ? di->entry : NULL;
+}
+
+int dictEntryWrite(Io *io, struct dict *d, const dictEntry *de)
+{
+    if (d->type->keyWrite(io, de->key) == ERR)
+        return ERR;
+    if (d->type->valWrite(io, d->type->valGet((dictEntry *)de)) == ERR)
+        return ERR;
+    return OK;
+}
+
+int dictEntryRead(Io *io, struct dict *d, int type, dictEntry **de)
+{
+    void *key = NULL, *val = NULL;
+
+    if (d->type->keyRead(io, &key) == ERR)
+        return ERR;
+    if (d->type->valRead(io, type, &val) == ERR)
+    {
+        d->type->keyFree(key);
+        return ERR;
+    }
+    dictEntry *e = malloc(sizeof(*e));
+    e->hash = d->type->hash(key);
+    e->key = key;
+    e->val = val;
+    e->next = NULL;
+
+    *de = e;
+    return OK;
+}
+
+int dictAddEntry(struct dict *d, dictEntry *de)
+{
+    if (dictIsRehashing(d))
+        dictRehashData(d, 1);
+
+    int htidx = dictIsRehashing(d) ? 1 : 0;
+    struct dictht *ht = &d->ht[htidx];
+
+    unsigned long idx = de->hash & ht->sizemask;
+    de->next = ht->table[idx];
+    ht->table[idx] = de;
+    ht->used++;
+
+    if (!dictIsRehashing(d) && d->ht[0].used > d->ht[0].size)
+        dictRehash(d);
+
+    return OK;
 }

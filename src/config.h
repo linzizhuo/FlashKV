@@ -19,8 +19,11 @@ enum DataType
 // 魔数和版本号
 #define RDB_MAGIC "FLASHKV"
 #define RDB_VERSION 1
+/* 启动时是否从 dump.rdb 加载数据（1=加载, 0=跳过，全部从空库启动） */
+#define RDB_LOAD_ENABLED 1
+#define RDB_FILENAME "dump.rdb" // ← 新增
 /* RDB type 字节编码（与 DataType 在同一文件，物理上保证一致） */
-#define RDB_TYPE_MASK 0x7F /* 低 7 位 = DataType */
+#define RDB_TYPE_MASK 0x7F  /* 低 7 位 = DataType */
 #define RDB_HAS_EXPIRE 0x80 /* 高 1 位 = TTL 标记 */
 
 /* 返回值 */
