@@ -157,6 +157,25 @@ Dict entry → entry->val = (void*)when    ← 无 malloc，无 ValObj
 - 16 个独立 db，`SELECT n` 切换
 - 每个 db 独立 dict + expires，DB 间隔离
 
+### 9️⃣ IO 模块 — 零拷贝双缓冲区
+
+- **双缓冲区设计**：`struct Io` 内含一个柔性数组 `buf[buflen * 2]`，前半段为写缓冲、后半段为读缓冲，读写不互相污染
+- **零拷贝路径**：调用方通过 `getbufIo` 直接获取写缓冲区指针，序列化直接写入 `buf`，最后 `commitIo` 提交偏移量——无需中间拷贝
+- **公用缓冲区，全局一次 malloc**：创建 `Io` 时一次性分配 `sizeof(Io) + buflen*2`，整个序列化过程零额外堆分配
+- **流式 flush**：缓冲区满时自动 `write` 到 fd，支持大体积快照而不占用过多内存
+- **统一读写 API**：`addIo` 追加写入、`readIo` 缓冲读取、`flushIo` 带 `fdatasync` 刷盘
+
+### 🔟 RDB 持久化 — 全量快照备份与恢复
+
+- **二进制格式**：自定义 RDB 协议，含魔术字 (`FLASHKV`)、版本号、数据库计数、逐 key 序列化
+- **类型全覆盖**：支持 `STRING`、`INT`、`ZSET` 三种值类型的序列化与反序列化
+- **TTL 完整保留**：每条 key 的过期时间随值一同持久化，恢复后过期语义不变
+- **多库支持**：`rdbSaveAll` 写入 `SELECTDB` opcode 分隔不同 DB，`rdbLoad` 完整恢复多库
+- **两种持久化命令**：
+  - `SAVE` — 阻塞当前线程，同步完成写盘
+  - `BGSAVE` — `fork()` 子进程异步写盘（利用 COW），主线程立即返回 `+OK`
+- **启动自动加载**：编译选项 `RDB_LOAD_ENABLED` 控制，服务启动时若 `dump.rdb` 存在则自动恢复，否则初始化空库
+
 ---
 
 ## ✅ 命令支持
@@ -181,6 +200,8 @@ Dict entry → entry->val = (void*)when    ← 无 malloc，无 ValObj
 | `ZREM key member` | 2 | O(1) 删除 member |
 | `ZCOUNT key min max` | 3 | score 区间计数 |
 | `ZREMRANGEBYSCORE key min max` | 3 | score 区间范围删除 |
+| `SAVE` | 0 | 同步持久化全量快照到 `dump.rdb` |
+| `BGSAVE` | 0 | `fork` 子进程异步写盘，主线程立即返回 |
 
 ---
 
@@ -234,6 +255,8 @@ src/
 ├── zset.c/.h       # ZSet 抽象层（dict + skiplist 双索引）
 ├── resp.c/.h       # RESP 协议解析器
 ├── sds.c/.h        # 动态字符串（柔性数组 + MurmurHash2）
+├── io.c/.h         # 零拷贝 I/O 模块（双缓冲区 + 流式读写）
+├── rdb.c/.h        # RDB 持久化（序列化/反序列化 + SAVE/BGSAVE）
 ├── val_obj.h       # 值类型统一包装（STRING/LIST/ZSET/SET/HASH/INT）
 ├── ttl.h           # TTL 过期接口 + 时间工具
 ├── log.h/c         # 日志模块
@@ -242,19 +265,29 @@ tests/
 ├── test_zset.c     # ZSet 单元测试（32 组）
 ├── test_resp.c     # RESP 协议测试
 ├── test_sds.c      # SDS 字符串测试
+├── test_rdb.c      # RDB 序列化/反序列化往返测试
+├── test_io.c       # IO 模块单元测试
 ├── bench_dict.c    # dict 微基准（rehash 延迟分布）
 ├── bench_server.c  # 服务端吞吐 + 延迟基准
 scripts/
 ├── bench_compare.sh # 与 Redis 6.0 自动对比脚本
 docs/
-├── benchmark-report.md     # 完整 Benchmark 报告
-├── dict.md                 # Dict 设计文档
-├── zskiplist.md            # 跳表设计文档
-├── epoll-server.md         # 网络层设计文档
-├── resp.md                 # RESP 协议解析器文档
-├── service-layer.md        # 命令层设计文档
-├── ttl.md                  # TTL 过期机制文档
-└── code-review-report.md   # 代码审查报告
+├── benchmark-report.md            # 完整 Benchmark 报告
+├── benchmark.md                   # Benchmark 分析
+├── benchmark-sparse-vs-compact.md # 稀疏 vs 紧凑 rehash 对比
+├── dict.md                        # Dict 设计文档
+├── dict-rehash-review.md          # Dict Rehash 审查
+├── zskiplist.md                   # 跳表设计文档
+├── epoll-server.md                # 网络层设计文档
+├── resp.md                        # RESP 协议解析器文档
+├── service-layer.md               # 命令层设计文档
+├── ttl.md                         # TTL 过期机制文档
+├── io模块设计报告.md               # IO 模块设计报告
+├── io模块设计笔记.md               # IO 模块设计笔记
+├── Database Backup设计报告.md      # RDB 持久化设计报告
+├── Database Backup设计笔记.md      # RDB 持久化设计笔记
+├── test-report.md                 # 测试报告
+└── code-review-report.md          # 代码审查报告
 ```
 
 ---
@@ -273,6 +306,11 @@ docs/
 | [epoll 服务器](docs/epoll-server.md) | Reactor 模式、syscall 优化、beforeSleep 变体 |
 | [Service 命令层](docs/service-layer.md) | 命令表分发、参数校验、响应组装 |
 | [TTL 过期机制](docs/ttl.md) | 惰性删除、时间精度、过期扫描策略 |
+| [IO 模块设计报告](docs/io模块设计报告.md) | 零拷贝双缓冲区、流式序列化、设计权衡 |
+| [IO 模块设计笔记](docs/io模块设计笔记.md) | IO 模块实现笔记与取舍 |
+| [RDB 持久化设计报告](docs/Database%20Backup设计报告.md) | 二进制协议、序列化/反序列化、多库支持、SAVE/BGSAVE |
+| [RDB 持久化设计笔记](docs/Database%20Backup设计笔记.md) | RDB 实现笔记与设计决策 |
+| [测试报告](docs/test-report.md) | 各模块测试覆盖情况 |
 | [Code Review 报告](docs/code-review-report.md) | 索引越界、未初始化、资源泄漏审计 |
 
 ---
@@ -291,6 +329,12 @@ make test_zset && ./test_zset
 
 # SDS 字符串
 make test_sds && ./test_sds
+
+# RDB 序列化/反序列化往返测试
+make test_rdb && ./test_rdb
+
+# IO 模块单元测试
+make test_io && ./test_io
 ```
 
 ---
@@ -300,5 +344,5 @@ make test_sds && ./test_sds
 - **主 dict 整数 inline 化**：TTL 过期字典已通过 `valGetRef` 将时间戳直接 inline 在 `entry->val` 里（零 ValObj），但主 dict 的整数值目前仍走 `malloc(sizeof(ValObj))`。
 - **`dictRehashData` 空桶连续跳过保护**：当前跳过空桶的 while 循环没有上限，若哈希表极稀疏可能导致单次调用耗时偏高。考虑加 `empty_visited` 计数器，撞空 N 次后提前返回。
 - 目前一次SET要进行至少3次堆分配，sds类型要进行4次，下一步可以考虑优化掉val_obj从而省去一次分配。
-- 持久化
+- **entry + key 融合分配**：key 是不可变定长数据，SDS 的 `alloc`/`flags` 字段（17B header）对 key 是纯浪费。将 key 以 `[4B len][data]` 格式直接嵌入 `dictEntry` 尾部柔性数组，一次 `malloc` 搞定 entry + key，SET 路径从 3-4 次分配降到 2 次，100 万 key 省 ~13MB。expires 字典的 key 指针共享同一块内存，rehash 搬迁不受影响。
 ---
