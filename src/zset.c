@@ -181,9 +181,50 @@ int zsetWrite(Io *io, zset *zs)
     zskiplistNode *node;
     while ((node = zslGetNode(&it)) != NULL)
     {
-        zslNodeWrite(io, node);
-        zslNext(&it); // 取完再前进
+        int n = zslNodeWrite(io, node);
+        if (n == ERR)
+            return ERR;
+        total += n;
+        zslNext(&it);
     }
 
     return total;
+}
+
+int zsetRead(Io *io, zset **zs)
+{
+    if (!io || !zs)
+        return ERR;
+
+    /* 读 count */
+    uint32_t count;
+    if (readIo(io, (char *)&count, 4) != OK)
+        return ERR;
+
+    /* 创建空 zset */
+    *zs = zsetNew();
+    if (!*zs)
+        return ERR;
+
+    /* 逐条反序列化：score + member，插入 dict + skiplist */
+    for (uint32_t i = 0; i < count; i++)
+    {
+        double score;
+        if (readIo(io, (char *)&score, 8) != OK)
+            goto err;
+
+        sds member = NULL;
+        if (sdsRead(io, &member) == ERR)
+            goto err;
+
+        /* zsetAdd 接管 member 所有权，同时维护 dict + skiplist */
+        zsetAdd(*zs, score, member);
+    }
+
+    return OK;
+
+err:
+    zsetFree(*zs);
+    *zs = NULL;
+    return ERR;
 }

@@ -192,7 +192,18 @@ static inline int valObjRead(Io *io, int type, ValObj **val)
         }
         break;
     }
-    /* DATA_ZSET / LIST / SET / HASH 后续补 */
+    case DATA_ZSET:
+    {
+        zset *zs = NULL;
+        if (zsetRead(io, &zs) == ERR)
+        {
+            free(o);
+            return ERR;
+        }
+        o->val.zs = zs;
+        break;
+    }
+    /* LIST / SET / HASH 后续补 */
     default:
         free(o);
         return ERR;
