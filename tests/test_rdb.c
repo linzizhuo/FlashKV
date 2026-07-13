@@ -126,6 +126,104 @@ int main(void) {
     close(fd);
     assert(found == 7); /* 1|2|4 = all 3 found */
     printf("PASS: test_rdb\n");
+
+    /* ============ Round-trip: rdbSave → rdbLoad → verify ============ */
+
+    kv = kvdbNew();
+    assert(kv);
+
+    /* string */
+    sds rk1 = sdsnew("rk1");
+    ValObj *vs2 = malloc(sizeof(*vs2));
+    vs2->type = DATA_STRING; vs2->val.str = sdsnew("world");
+    assert(kvdbSet(kv, rk1, vs2) == NULL);
+
+    /* int + TTL */
+    sds rk2 = sdsnew("rk2");
+    ValObj *vi2 = malloc(sizeof(*vi2));
+    vi2->type = DATA_INT; vi2->val.ll = 42;
+    assert(kvdbSet(kv, rk2, vi2) == NULL);
+    assert(kvdbExpire(kv, rk2, 2000000000) == 1);
+
+    /* zset: 3 members */
+    sds rk3 = sdsnew("rk3");
+    ValObj *vz2 = malloc(sizeof(*vz2));
+    vz2->type = DATA_ZSET; vz2->val.zs = zsetNew();
+    assert(vz2->val.zs);
+    zsetAdd(vz2->val.zs, 10.0, sdsnew("a"));
+    zsetAdd(vz2->val.zs, 20.0, sdsnew("b"));
+    zsetAdd(vz2->val.zs, 30.0, sdsnew("c"));
+    assert(kvdbSet(kv, rk3, vz2) == NULL);
+
+    const char *path2 = "/tmp/test_rdb_rt.rdb";
+    unlink(path2);
+    assert(rdbSave(kv, path2) == OK);
+    kvdbFree(kv);
+
+    /* Load back */
+    kvdb **loaded = NULL;
+    int dbcount = rdbLoad(&loaded, path2);
+    assert(dbcount == 1);
+    assert(loaded != NULL);
+    assert(loaded[0] != NULL);
+
+    kvdb *ldb = loaded[0];
+
+    /* verify rk1: string "world" */
+    sds lk1 = sdsnew("rk1");
+    ValObj *v = kvdbGet(ldb, lk1);
+    assert(v != NULL);
+    assert(v->type == DATA_STRING);
+    assert(strcmp(v->val.str, "world") == 0);
+    sdsfree(lk1);
+
+    /* verify rk2: int 42 + TTL */
+    sds lk2 = sdsnew("rk2");
+    v = kvdbGet(ldb, lk2);
+    assert(v != NULL);
+    assert(v->type == DATA_INT);
+    assert(v->val.ll == 42);
+    assert(kvdbTTL(ldb, lk2) > 0);
+    sdsfree(lk2);
+
+    /* verify rk3: zset, 3 members */
+    sds lk3 = sdsnew("rk3");
+    v = kvdbGet(ldb, lk3);
+    assert(v != NULL);
+    assert(v->type == DATA_ZSET);
+    assert(v->val.zs != NULL);
+    assert(zsetLen(v->val.zs) == 3);
+
+    sds la = sdsnew("a"), lb = sdsnew("b"), lc = sdsnew("c");
+    zskiplistNode *zn;
+
+    zn = zsetFind(v->val.zs, la);
+    assert(zn != NULL);
+    assert(zslNodeScore(zn) == 10.0);
+
+    zn = zsetFind(v->val.zs, lb);
+    assert(zn != NULL);
+    assert(zslNodeScore(zn) == 20.0);
+
+    zn = zsetFind(v->val.zs, lc);
+    assert(zn != NULL);
+    assert(zslNodeScore(zn) == 30.0);
+
+    sdsfree(la); sdsfree(lb); sdsfree(lc);
+    sdsfree(lk3);
+
+    /* verify rk1 doesn't have TTL */
+    lk1 = sdsnew("rk1");
+    assert(kvdbTTL(ldb, lk1) == -1); /* -1 = no TTL */
+    sdsfree(lk1);
+
+    /* cleanup */
+    kvdbFree(ldb);
+    free(loaded);
+    unlink(path2);
+
+    printf("PASS: test_rdb_roundtrip\n");
+
     unlink(path);
     return 0;
 }

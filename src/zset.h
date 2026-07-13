@@ -38,5 +38,5 @@ zskiplistNode **zsetRange(zset *zs, double min, double max,
                        unsigned long *count);                /* score 区间返回节点数组，调用方 free() */
 
 int zsetWrite(Io *io, zset *zs); /* zset 格式直接进 io */
-
+int zsetRead(Io *io, zset **zs);
 #endif
