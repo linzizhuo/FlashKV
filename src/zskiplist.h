@@ -63,5 +63,6 @@ zskiplistNode **zslrange(zskiplist *zsl, double min, double max,
 
 /* 旧：size_t zslNodeSerialize(const zskiplistNode *node, void **buf); */
 int zslNodeWrite(Io *io, const zskiplistNode *node); /* [8B score][sdsWrite member] */
+int zslNodeRead(Io *io, zskiplistNode *node);        /* 填充 score + ele，node 需已分配 */
 
 #endif

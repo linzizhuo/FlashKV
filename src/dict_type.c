@@ -12,9 +12,12 @@ struct dictType dictTypeSds = {
 
     /* 持久化 */
     .keyWrite = (int (*)(Io *, const void *))sdsWrite,
-    .keyDeserialize = (void *(*)(const void *))sdsDeserialize,
+    // .keyDeserialize = (void *(*)(const void *))sdsDeserialize,
     .valWrite = (int (*)(Io *, const void *))valObjWrite,
-    .valDeserialize = (void *(*)(int, const void *))valObjDeserialize,
+    // .valDeserialize = (void *(*)(int, const void *))valObjDeserialize,
+    .keyRead = (int (*)(Io *, void **))sdsRead,
+    .valRead = (int (*)(Io *, int, void **))valObjRead,
+
 };
 struct dictType dictTTL = {
     .hash = sdsHash,

@@ -414,3 +414,21 @@ int zslNodeWrite(Io *io, const zskiplistNode *node)
 
     return 8 + rc; /* score + member */
 }
+// zskiplist.c — 实现
+int zslNodeRead(Io *io, zskiplistNode *node)
+{
+    if (!io || !node)
+        return ERR;
+
+    /* 8B score */
+    int rc = readIo(io, (char *)&node->score, 8);
+    if (rc != OK)
+        return ERR;
+
+    /* member */
+    rc = sdsRead(io, &node->ele);
+    if (rc == ERR)
+        return ERR;
+
+    return 8 + rc;
+}

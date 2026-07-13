@@ -162,4 +162,42 @@ static inline void valObjFree(void *ptr)
     }
     free(o);
 }
+
+static inline int valObjRead(Io *io, int type, ValObj **val)
+{
+    ValObj *o = malloc(sizeof(*o));
+    if (!o)
+        return ERR;
+    o->type = (enum DataType)type;
+
+    switch (o->type)
+    {
+    case DATA_STRING:
+    {
+        sds s = NULL;
+        if (sdsRead(io, &s) == ERR)
+        {
+            free(o);
+            return ERR;
+        }
+        o->val.str = s;
+        break;
+    }
+    case DATA_INT:
+    {
+        if (readIo(io, (char *)&o->val.ll, sizeof(o->val.ll)) != OK)
+        {
+            free(o);
+            return ERR;
+        }
+        break;
+    }
+    /* DATA_ZSET / LIST / SET / HASH 后续补 */
+    default:
+        free(o);
+        return ERR;
+    }
+    *val = o;
+    return OK;
+}
 #endif

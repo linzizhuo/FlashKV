@@ -4,7 +4,6 @@
 #include <stdint.h>
 #include "io.h"
 typedef char* sds;
-
 struct __attribute__((__packed__)) sdshdr64
 {
     uint64_t len; // 长度
@@ -36,5 +35,6 @@ sds sdsDeserialize(const void *buf);
 */
 int sdsWrite(Io *io, sds s); /* [4B len][data] 直接进 io */
 int sdsRead(Io *io, sds *s); // 读：返回字节数或 ERR，sds 由 *s 带出
+
 
 #endif

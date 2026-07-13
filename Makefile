@@ -7,7 +7,7 @@ CXXFLAGS = -Wall -Wextra -g -O2 -std=c++17
 
 SDS_SRC = src/sds.c
 
-test_sds: tests/test_sds.c $(SDS_SRC)
+test_sds: tests/test_sds.c $(SDS_SRC) src/io.c
 	$(CC) $(CFLAGS) -I src -o $@ $^
 
 test_io: tests/test_io.c src/io.c
@@ -19,8 +19,8 @@ DICT_SRC  = src/dict.c src/dict_type.c
 KVDB_SRC  = src/kvdb.c
 DICT_DEPS = src/dict.h src/dict_type.h src/sds.h src/val_obj.h src/kvdb.h src/ttl.h
 
-test_dict: tests/test_dict.c $(DICT_SRC) $(SDS_SRC) src/zskiplist.c src/zset.c $(DICT_DEPS)
-	$(CC) $(CFLAGS) -I src -o $@ tests/test_dict.c $(DICT_SRC) $(SDS_SRC) src/zskiplist.c src/zset.c
+test_dict: tests/test_dict.c $(DICT_SRC) $(SDS_SRC) src/zskiplist.c src/zset.c src/io.c $(DICT_DEPS)
+	$(CC) $(CFLAGS) -I src -o $@ tests/test_dict.c $(DICT_SRC) $(SDS_SRC) src/zskiplist.c src/zset.c src/io.c
 
 bench_dict: tests/bench_dict.c $(DICT_SRC) $(SDS_SRC)
 	$(CC) $(CFLAGS) -O2 -I src -o $@ $^ -lm
@@ -53,16 +53,23 @@ test_resp: tests/test_resp.c $(RESP_SRC)
 
 ZSET_SRC = src/zset.c src/zskiplist.c
 
-test_zset: tests/test_zset.c $(ZSET_SRC) $(DICT_SRC) $(SDS_SRC)
-	$(CC) $(CFLAGS) -I src -o $@ tests/test_zset.c $(ZSET_SRC) $(DICT_SRC) $(SDS_SRC)
+test_zset: tests/test_zset.c $(ZSET_SRC) $(DICT_SRC) $(SDS_SRC) src/io.c
+	$(CC) $(CFLAGS) -I src -o $@ tests/test_zset.c $(ZSET_SRC) $(DICT_SRC) $(SDS_SRC) src/io.c
+
+# ---------- RDB ----------
+
+RDB_SRC = src/rdb.c
+
+test_rdb: tests/test_rdb.c $(RDB_SRC) $(KVDB_SRC) $(DICT_SRC) $(SDS_SRC) src/zskiplist.c src/zset.c src/io.c
+	$(CC) $(CFLAGS) -I src -o $@ tests/test_rdb.c $(RDB_SRC) $(KVDB_SRC) $(DICT_SRC) $(SDS_SRC) src/zskiplist.c src/zset.c src/io.c
 
 # ---------- 全部 ----------
 
 .PHONY: all
-all: test_resp test_sds test_dict test_zset flashkv
+all: test_resp test_sds test_dict test_zset test_rdb flashkv
 	@echo "======= 全部构建完成 ======="
 
 clean:
-	rm -f test_resp test_sds test_dict test_zset flashkv bench_dict bench_server
+	rm -f test_resp test_sds test_dict test_zset test_rdb flashkv bench_dict bench_server
 
 .PHONY: clean
