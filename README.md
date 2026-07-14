@@ -2,7 +2,7 @@
 
 ![Architecture](./images/Architecture.png)
 
-**~3,500 行 C 语言**，从零手写核心数据结构（跳表、哈希表、SDS 动态字符串、RESP 协议解析），
+**~5,000 行 C 语言**，从零手写核心数据结构（跳表、哈希表、SDS 动态字符串、RESP 协议解析），
 实现了一个**兼容 Redis 有线协议**的高性能内存键值存储系统。
 经 `redis-benchmark` 压测，**P=64 SET 吞吐 143 万 ops/s，领先 Redis 6.0 同一环境 27%**。
 
@@ -142,6 +142,7 @@ Dict entry → entry->val = (void*)when    ← 无 malloc，无 ValObj
 
 ### 6️⃣ SDS 动态字符串
 
+- **多类型自适应 header**：参照 Redis 设计，按字符串长度自动选择 `sdshdr5/8/16/32/64`，短字符串用 1 字节 header、长字符串用 8 字节，避免"一刀切"的内存浪费
 - 柔性数组 (`char buf[]`) 实现，二进制安全（含 `\0` 可正常存储）
 - O(1) 长度获取（`len` 字段，而非 `strlen` 遍历）
 - 内置 MurmurHash2，用于 dict key 的哈希计算
