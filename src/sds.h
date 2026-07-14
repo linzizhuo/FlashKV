@@ -16,7 +16,6 @@ typedef char *sds;
 // #define SDS_NULL_TERM 1 // \0 terminator, 1 byte
 #define SDS_TYPE_5_LEN(s) (((unsigned char)(s[-1])) >> SDS_TYPE_BITS) // 右移 3 位拿长度
 #define SDS_HDR_VAR(T, s) struct sdshdr##T *sh = (void *)((s) - (sizeof(struct sdshdr##T)));
-
 #define SDS_HDR(T, s) ((struct sdshdr##T *)((s) - (sizeof(struct sdshdr##T))))
 
 
@@ -268,8 +267,10 @@ static inline int sdsHdrSize(char type)
     return 0;
 }
 
+char sdsReqType(size_t string_size);
 sds sdsnew(const char *init);
 sds sdsnewlen(const void *init, size_t initlen);
+sds sdstrynewlen(const void *init, size_t initlen);
 sds sdsdup(const sds s);
 /* 为字符串做hash的函数 */
 uint64_t sdsHash(const void *key);
