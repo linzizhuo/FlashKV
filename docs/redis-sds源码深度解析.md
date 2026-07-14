@@ -139,7 +139,7 @@ Redis 其实并没有用到 `SDS_TYPE_5`，我们舍弃，所以定义变成了�
 ```c
 #define SDS_TYPE_5  0
 #define SDS_TYPE_BITS 3
-#define SDS_TYPE_5_LEN(f) ((f) >> SDS_TYPE_BITS)  // 右移 3 位拿长度
+#define SDS_TYPE_5_LEN(s) (((unsigned char)(s[-1])) >> SDS_TYPE_BITS)  // 右移 3 位拿长度
 
 struct __attribute__ ((__packed__)) sdshdr5 {
     unsigned char flags; /* 3 lsb of type, and 5 msb of string length */

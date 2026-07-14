@@ -70,10 +70,6 @@ void sdsfree(void *s)
     free(SDS_HDR(64, s));
 }
 
-size_t sdslen(const sds str)
-{
-    return SDS_HDR(64, str)->len;
-}
 /* 使用MurmurHash2算法，快，均匀 */
 uint64_t sdsHash(const void *key)
 {
