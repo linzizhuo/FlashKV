@@ -1,7 +1,7 @@
 #ifndef _KVDB_H
 #define _KVDB_H
 
-#include "val_obj.h"
+#include "object.h"
 #include "zset.h"
 #include <time.h>
 

@@ -1,6 +1,6 @@
 #include"dict_type.h"
 #include "sds.h"
-#include "val_obj.h"
+#include "object.h"
 #include "io.h"
 
 struct dictType dictTypeSds = {

@@ -17,7 +17,7 @@ test_io: tests/test_io.c src/io.c
 
 DICT_SRC  = src/dict.c src/dict_type.c
 KVDB_SRC  = src/kvdb.c
-DICT_DEPS = src/dict.h src/dict_type.h src/sds.h src/val_obj.h src/kvdb.h src/ttl.h
+DICT_DEPS = src/dict.h src/dict_type.h src/sds.h src/object.h src/kvdb.h src/ttl.h
 
 test_dict: tests/test_dict.c $(DICT_SRC) $(SDS_SRC) src/zskiplist.c src/zset.c src/io.c $(DICT_DEPS)
 	$(CC) $(CFLAGS) -I src -o $@ tests/test_dict.c $(DICT_SRC) $(SDS_SRC) src/zskiplist.c src/zset.c src/io.c
@@ -37,7 +37,7 @@ SERVER_SRC = src/main.c src/server.c src/log.c src/service.c \
              src/kvdb.c src/dict.c src/dict_type.c src/resp.c src/sds.c src/zskiplist.c src/zset.c \
              src/rdb.c src/io.c
 SERVER_DEPS = src/server.h src/log.h src/service.h src/kvdb.h \
-              src/dict.h src/dict_type.h src/resp.h src/sds.h src/val_obj.h src/ttl.h src/zskiplist.h src/zset.h
+              src/dict.h src/dict_type.h src/resp.h src/sds.h src/object.h src/ttl.h src/zskiplist.h src/zset.h
 
 flashkv: $(SERVER_SRC) $(SERVER_DEPS)
 	$(CC) $(CFLAGS) -I src -o $@ $(SERVER_SRC)

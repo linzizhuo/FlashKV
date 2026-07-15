@@ -165,7 +165,7 @@ err:
 static int rdbLoadData(Io *io, kvdb *kv)
 {
     struct dict *dict = kvdbGetDict(kv);
-    struct dict *expires = kvdbGetExpires(kv);
+    // struct dict *expires = kvdbGetExpires(kv);
 
     uint32_t key_count;
     if (readIo(io, (char *)&key_count, sizeof(key_count)) != OK)
