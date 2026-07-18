@@ -171,7 +171,7 @@ static void selectCommand(Connection *c, struct service *svc,
 }
 
 /* ================================================================
- *  命令：GET / SET / EXISTS / DEL
+ *  命令：GET / SET / EXISTS / DEL / SETRANGE / SETBIT
  * ================================================================ */
 
 static void getCommand(Connection *c, struct service *svc,
@@ -232,6 +232,270 @@ static void setCommand(Connection *c, struct service *svc,
     if (old) valObjFree(old);
     /* key 所有权已移交 kvdb，不再 sdsfree */
     addReplyOK(c);
+}
+
+/* SETRANGE key offset value */
+static void setrangeCommand(Connection *c, struct service *svc,
+                            RespObj *argv, int argc)
+{
+    (void)argc;
+
+    /* -- 校验 key -- */
+    if (argv[1].type != RESP_STR)
+    {
+        addReplyError(c, "wrong type for key");
+        return;
+    }
+
+    /* -- 解析 offset -- */
+    long long offset;
+    if (argv[2].type == RESP_INT)
+    {
+        offset = argv[2].integer;
+    }
+    else if (argv[2].type == RESP_STR)
+    {
+        int ok;
+        offset = parseLongLong(&argv[2], &ok);
+        if (!ok)
+        {
+            addReplyError(c, "value is not an integer or out of range");
+            return;
+        }
+    }
+    else
+    {
+        addReplyError(c, "wrong type for offset");
+        return;
+    }
+    if (offset < 0)
+    {
+        addReplyError(c, "offset is out of range");
+        return;
+    }
+
+    /* -- 校验 value -- */
+    if (argv[3].type != RESP_STR)
+    {
+        addReplyError(c, "wrong type for value");
+        return;
+    }
+
+    sds key = respKeyToSds(&argv[1]);
+    if (!key)
+    {
+        addReplyError(c, "OOM");
+        return;
+    }
+
+    ValObj *obj = kvdbGet(svc->kvs[c->dbnum], key);
+    sds s;
+    int newkey = 0;
+
+    if (!obj)
+    {
+        s = sdsnewlen("", 0);
+        if (!s)
+            goto oom;
+        newkey = 1;
+    }
+    else if (obj->type == DATA_STRING)
+    {
+        s = obj->val.str;
+    }
+    else
+    {
+        addReplyError(c,
+                      "WRONGTYPE Operation against a key holding the wrong kind of value");
+        goto cleanup;
+    }
+
+    /* -- 写入 -- */
+    size_t vallen = argv[3].len;
+    size_t end = (size_t)offset + vallen;
+    size_t oldlen = sdslen(s);
+
+    if (end > oldlen)
+    {
+        s = sdsMakeRoomFor(s, end - oldlen);
+        if ((size_t)offset > oldlen)
+            memset(s + oldlen, 0, (size_t)offset - oldlen);
+        sdssetlen(s, end);
+    }
+    memcpy(s + offset, argv[3].str, vallen);
+    s[sdslen(s)] = '\0';
+
+    /* -- 提交 -- */
+    if (newkey)
+    {
+        ValObj *newobj = malloc(sizeof(*newobj));
+        if (!newobj)
+            goto oom_s;
+        newobj->type = DATA_STRING;
+        newobj->val.str = s;
+        ValObj *old = kvdbSet(svc->kvs[c->dbnum], key, newobj);
+        if (old)
+            valObjFree(old);
+        addReplyInteger(c, (long long)sdslen(s));
+        return; /* key 已移交 kvdb */
+    }
+
+    obj->val.str = s;
+    addReplyInteger(c, (long long)sdslen(s));
+    sdsfree(key);
+    return;
+
+oom_s:
+    sdsfree(s);
+oom:
+    addReplyError(c, "OOM");
+cleanup:
+    sdsfree(key);
+}
+
+/* SETBIT key offset value */
+static void setbitCommand(Connection *c, struct service *svc,
+                          RespObj *argv, int argc)
+{
+    (void)argc;
+
+    /* -- 校验 key -- */
+    if (argv[1].type != RESP_STR)
+    {
+        addReplyError(c, "wrong type for key");
+        return;
+    }
+
+    /* -- 解析 offset -- */
+    long long offset;
+    if (argv[2].type == RESP_INT)
+    {
+        offset = argv[2].integer;
+    }
+    else if (argv[2].type == RESP_STR)
+    {
+        int ok;
+        offset = parseLongLong(&argv[2], &ok);
+        if (!ok)
+        {
+            addReplyError(c, "value is not an integer or out of range");
+            return;
+        }
+    }
+    else
+    {
+        addReplyError(c, "wrong type for offset");
+        return;
+    }
+    if (offset < 0)
+    {
+        addReplyError(c, "offset is out of range");
+        return;
+    }
+
+    /* -- 解析 bit 值 -- */
+    long long bitval;
+    if (argv[3].type == RESP_INT)
+    {
+        bitval = argv[3].integer;
+    }
+    else if (argv[3].type == RESP_STR)
+    {
+        int ok;
+        bitval = parseLongLong(&argv[3], &ok);
+        if (!ok)
+        {
+            addReplyError(c, "value is not an integer or out of range");
+            return;
+        }
+    }
+    else
+    {
+        addReplyError(c, "wrong type for bit value");
+        return;
+    }
+    if (bitval != 0 && bitval != 1)
+    {
+        addReplyError(c, "bit is not 0 or 1");
+        return;
+    }
+
+    sds key = respKeyToSds(&argv[1]);
+    if (!key)
+    {
+        addReplyError(c, "OOM");
+        return;
+    }
+
+    ValObj *obj = kvdbGet(svc->kvs[c->dbnum], key);
+    sds s;
+    int newkey = 0;
+
+    if (!obj)
+    {
+        s = sdsnewlen("", 0);
+        if (!s)
+            goto oom;
+        newkey = 1;
+    }
+    else if (obj->type == DATA_STRING)
+    {
+        s = obj->val.str;
+    }
+    else
+    {
+        addReplyError(c,
+                      "WRONGTYPE Operation against a key holding the wrong kind of value");
+        goto err;
+    }
+
+    /* -- 位运算 -- */
+    size_t byte_idx = (size_t)offset / 8;
+    int bit_pos = 7 - (offset % 8);
+    uint8_t bit_mask = (uint8_t)(1 << bit_pos);
+    size_t oldlen = sdslen(s);
+
+    if (byte_idx + 1 > oldlen)
+    {
+        s = sdsMakeRoomFor(s, byte_idx + 1 - oldlen);
+        memset(s + oldlen, 0, byte_idx + 1 - oldlen);
+        sdssetlen(s, byte_idx + 1);
+    }
+
+    int oldbit = (s[byte_idx] & bit_mask) ? 1 : 0;
+
+    if (bitval)
+        s[byte_idx] |= bit_mask;
+    else
+        s[byte_idx] &= ~bit_mask;
+
+    s[sdslen(s)] = '\0';
+
+    if (newkey)
+    {
+        ValObj *newobj = malloc(sizeof(*newobj));
+        if (!newobj)
+            goto oom_s;
+        newobj->type = DATA_STRING;
+        newobj->val.str = s;
+        ValObj *old = kvdbSet(svc->kvs[c->dbnum], key, newobj);
+        if (old)
+            valObjFree(old);
+        addReplyInteger(c, (long long)oldbit);
+        return; /* key 已移交 kvdb，不 sdsfree */
+    }
+
+    obj->val.str = s;
+    addReplyInteger(c, (long long)oldbit);
+    sdsfree(key);
+    return;
+
+oom_s:
+    sdsfree(s);
+oom:
+    addReplyError(c, "OOM");
+err:
+    sdsfree(key);
 }
 
 static void existsCommand(Connection *c, struct service *svc,
@@ -798,6 +1062,78 @@ static void bgsaveCommand(Connection *c, struct service *svc,
     /* 父进程 */
     addReplyOK(c);
 }
+/*
+
+*/
+static void appendCommand(Connection *c, struct service *svc,
+                          RespObj *argv, int argc)
+{
+    (void)argc;
+
+    if (argv[1].type != RESP_STR || argv[2].type != RESP_STR)
+    {
+        addReplyError(c, "wrong type for key or value");
+        return;
+    }
+
+    sds key = respKeyToSds(&argv[1]);
+    if (!key)
+    {
+        addReplyError(c, "OOM");
+        return;
+    }
+
+    ValObj *obj = kvdbGet(svc->kvs[c->dbnum], key);
+
+    /* key 不存在：新建 */
+    if (!obj)
+    {
+        sds val = sdsnewlen(argv[2].str, argv[2].len);
+        if (!val)
+        {
+            sdsfree(key);
+            addReplyError(c, "OOM");
+            return;
+        }
+        ValObj *newobj = malloc(sizeof(*newobj));
+        if (!newobj)
+        {
+            sdsfree(val);
+            sdsfree(key);
+            addReplyError(c, "OOM");
+            return;
+        }
+        newobj->type = DATA_STRING;
+        newobj->val.str = val;
+        long long newlen = (long long)sdslen(val);
+        ValObj *old = kvdbSet(svc->kvs[c->dbnum], key, newobj);
+        if (old)
+            valObjFree(old);
+        addReplyInteger(c, newlen);
+        return;
+    }
+
+    /* 类型不对 */
+    if (obj->type != DATA_STRING)
+    {
+        addReplyError(c, "WRONGTYPE Operation against a key holding the wrong kind of value");
+        sdsfree(key);
+        return;
+    }
+
+    /* DATA_STRING：追加 */
+    sds val = obj->val.str;
+    val = sdscatlen(val, argv[2].str, argv[2].len);
+    if (!val)
+    {
+        sdsfree(key);
+        addReplyError(c, "OOM");
+        return;
+    }
+    obj->val.str = val;
+    addReplyInteger(c, (long long)sdslen(val));
+    sdsfree(key);
+}
 
 /* ================================================================
  *  命令表
@@ -806,6 +1142,7 @@ static void bgsaveCommand(Connection *c, struct service *svc,
  * ================================================================ */
 
 static Command cmd_table[] = {
+    {"APPEND", 2, appendCommand},
     {"BGSAVE", 0, bgsaveCommand},
     {"DEL", 1, delCommand},
     {"EXISTS", 1, existsCommand},
@@ -820,6 +1157,8 @@ static Command cmd_table[] = {
     {"SAVE", 0, saveCommand},
     {"SELECT", 1, selectCommand},
     {"SET", 2, setCommand},
+    {"SETBIT", 3, setbitCommand},
+    {"SETRANGE", 3, setrangeCommand},
     {"TTL", 1, ttlCommand},
     {"ZADD", 3, zaddCommand},
     {"ZCARD", 1, zcardCommand},

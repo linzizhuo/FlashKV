@@ -17,7 +17,7 @@ typedef char *sds;
 #define SDS_TYPE_5_LEN(s) (((unsigned char)(s[-1])) >> SDS_TYPE_BITS) // 右移 3 位拿长度
 #define SDS_HDR_VAR(T, s) struct sdshdr##T *sh = (void *)((s) - (sizeof(struct sdshdr##T)));
 #define SDS_HDR(T, s) ((struct sdshdr##T *)((s) - (sizeof(struct sdshdr##T))))
-
+#define SDS_MAX_PREALLOC (1024 * 1024)
 
 struct __attribute__ ((__packed__)) sdshdr5 {
     unsigned char flags; /* 3 lsb of type, and 5 msb of string length */
@@ -267,6 +267,17 @@ static inline int sdsHdrSize(char type)
     return 0;
 }
 
+static inline size_t sdsReqSize(size_t len, char type)
+{
+    return len + sdsHdrSize(type) + 1;
+}
+
+sds sdsnewplacement(char *buf, size_t bufsize, char type, const char *init, size_t initlen);
+
+// 对外——只给两个语义明确的入口
+sds sdsMakeRoomFor(sds s, size_t addlen);          // greedy = 1
+sds sdsMakeRoomForNonGreedy(sds s, size_t addlen); // greedy = 0
+sds sdscatlen(sds s, const void *data, size_t datalen);
 char sdsReqType(size_t string_size);
 sds sdsnew(const char *init);
 sds sdsnewlen(const void *init, size_t initlen);
