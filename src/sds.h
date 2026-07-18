@@ -277,7 +277,7 @@ sds sdsnewplacement(char *buf, size_t bufsize, char type, const char *init, size
 // 对外——只给两个语义明确的入口
 sds sdsMakeRoomFor(sds s, size_t addlen);          // greedy = 1
 sds sdsMakeRoomForNonGreedy(sds s, size_t addlen); // greedy = 0
-
+sds sdscatlen(sds s, const void *data, size_t datalen);
 char sdsReqType(size_t string_size);
 sds sdsnew(const char *init);
 sds sdsnewlen(const void *init, size_t initlen);

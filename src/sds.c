@@ -174,15 +174,14 @@ sds sdsnewplacement(char *buf, size_t bufsize, char type, const char *init, size
     返回值：
         sds
 */
-
-sds _sdsMakeRoomFor(sds s, size_t addlen, int greedy)
+sds _sdsmakeroomfor(sds s, size_t addlen, int greedy)
 {
     size_t avail = sdsavail(s); // 获取剩余的
     if (avail >= addlen)
         return s; // 剩余的还够，直接返回
 
     // 计算需要获取的长度
-    assert(addlen + sdslen(s) < addlen); // 溢出检查
+    assert(addlen + sdslen(s) >= addlen); // 溢出检查
     size_t newlen = sdslen(s) + addlen;
     
     if (greedy == 1)    
@@ -191,7 +190,7 @@ sds _sdsMakeRoomFor(sds s, size_t addlen, int greedy)
     char type = sdsReqType(newlen);
     if(type == SDS_TYPE_5)
         type = SDS_TYPE_8; // 5转8
-    size_t hdrlen = sdsHdrSize(type);
+    int hdrlen = sdsHdrSize(type);
     void *sh = malloc(newlen + hdrlen + 1); // 先分配
     if(!sh)
         return s;
@@ -203,15 +202,30 @@ sds _sdsMakeRoomFor(sds s, size_t addlen, int greedy)
     sdsfree(s);
     return newsds;
 }
-
 // 对外——只给两个语义明确的入口
 sds sdsMakeRoomFor(sds s, size_t addlen)          // greedy = 1
 {
-    return _sdsMakeRoomFor(s, addlen, 1);
+    return _sdsmakeroomfor(s, addlen, 1);
 }
 sds sdsMakeRoomForNonGreedy(sds s, size_t addlen) // greedy = 0
 {
-    return _sdsMakeRoomFor(s, addlen, 0);
+    return _sdsmakeroomfor(s, addlen, 0);
+}
+/*
+    给一个sds的尾部追加数据
+    s 必须非 NULL，调用方保证。返回可能的新指针（realloc）
+    data 必须非NULL，调用方保证。
+    addlen -> 要追加的长度
+*/
+sds sdscatlen(sds s, const void* data, size_t datalen)
+{
+    assert(s != NULL && data != NULL); /* 不接受空数据，退化成扩容语义走 sdsMakeRoomFor */
+    size_t len = sdslen(s);
+    s = sdsMakeRoomFor(s, datalen); // 扩容
+    memcpy(s + len, data, datalen);
+    sdssetlen(s, len + datalen);
+    s[sdslen(s)] = '\0';
+    return s;
 }
 
 size_t sdsSerialize(const sds s, void **buf)
@@ -278,7 +292,6 @@ void sdsfree(void *s)
         return;
     free(s - sdsHdrSize(sdsType(s)));
 }
-
 /* 使用MurmurHash2算法，快，均匀 */
 uint64_t sdsHash(const void *key)
 {
