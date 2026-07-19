@@ -1,0 +1,246 @@
+module: expire
+depends: [dict, kvdb, config]
+description: >
+  主动过期删除引擎。与惰性删除互补，在 cron 中批量随机采样，
+  将过期 key 残留率控制在统计意义上的低水平。
+
+# =========================================================================
+# 不变量
+# =========================================================================
+invariants:
+
+  cursor-fairness:
+    describe: "游标不会永远卡在某个 DB——每次 cycle 至少推进一个 DB，或在当前 DB 清空后推进"
+    condition: "每轮 cycle 后，要么 current_db 递增，要么当前 DB 的 expires 已清空"
+    check: review
+    violation: "热点 DB 的过期 key 得不到清理"
+
+  time-budget-not-breached:
+    describe: "达到时间预算后函数必须返回，不得继续扫描"
+    condition: "elapsed >= budget ⇒ 函数返回"
+    check: runtime
+    violation: "阻塞事件循环，客户端请求得不到响应"
+
+  no-expire-if-no-ttl:
+    describe: "没有 TTL 的 key 不会被定期删除误删"
+    condition: "定期删除只操作 expires dict 中的 key，不触碰无 TTL 的 key"
+    check: review
+    violation: "正常 key 被误删，数据丢失"
+
+  expires-subset-of-keys:
+    describe: "expires 字典中的 key 必须同时存在于 keys 字典"
+    condition: "删除前确认 key 仍在 keys 中"
+    check: runtime
+    violation: "重复删除尝试，或数据不一致"
+
+# =========================================================================
+# 函数契约
+# =========================================================================
+contracts:
+
+  # ----- 惰性删除（由 kvdb.c 实现，expire 模块配合） -----
+  expireIfNeeded:
+    file: src/kvdb.c:20
+    access: private
+    returns: bool
+    summary: >
+      惰性删除——访问 key 时检查是否过期。过期则从双字典物理删除并返回 true。
+
+    requires:
+      - "kv != NULL, kv->dict 和 kv->expires 均已初始化"
+      - "key 是有效 sds 指针"
+      - "h 是 key 的有效 hash 值"
+      - "单线程上下文，调用方无需加锁"
+
+    guarantees:
+      - "返回 false ⇒ key 未过期或不存在 TTL"
+      - "返回 true  ⇒ key 已从 expires 和 keys 两个字典物理删除，后续无法访问"
+
+    side_effects:
+      - when: "返回 true"
+        effect:
+          - "dictDelete(kv->expires, key)"
+          - "dictDelete(kv->dict, key)"
+      - when: "返回 false"
+        effect: "无"
+
+  # ----- 主动过期 -----
+  activeExpireCycle:
+    file: src/expire.c
+    access: public
+    returns: void
+    summary: >
+      定期删除主循环。所有 DB 轮流推进，随机采样 + 自适应循环。
+      函数被动执行传入的 type，不自行决定下次调用模式。
+
+    params:
+      - name: type
+        values: [ACTIVE_EXPIRE_CYCLE_SLOW, ACTIVE_EXPIRE_CYCLE_FAST]
+        desc: "SLOW = serverCron 驱动; FAST = beforeSleep 驱动"
+
+    requires:
+      - "service 已初始化，dbsize > 0"
+      - "单线程上下文"
+
+    guarantees:
+      - "至少尝试清理了当前游标所在 DB"
+      - "过期比例 ≤ 阈值时及时退出"
+      - "达到时间预算时强制退出"
+      - "设置 timelimit_exit 标志供调用方判断是否触发 FAST"
+
+    constraints:
+      - name: effort-scaling
+        describe: "effort 线性影响所有参数"
+        value:
+          keys_per_loop: "20 + 20/4 × effort"
+          fast_budget: "1000 + 1000/4 × effort μs"
+          slow_budget: "25 + 2 × effort % cron 间隔"
+          stale_threshold: "10 - effort %"
+          effort_range: "[1, 10]"
+
+      - name: loop-limit
+        describe: "单次 cycle 内最多 16 轮采样，硬上限"
+        value: "ACTIVE_EXPIRE_MAX_LOOPS = 16"
+
+      - name: time-budget
+        describe: "各模式时间预算，达到后强制返回"
+        value:
+          FAST: "≤ 1250 μs (effort=1)"
+          SLOW: "≤ 27% cron 间隔 (effort=1)"
+
+      - name: early-exit-threshold
+        describe: "过期比例低于阈值则退出当前 DB"
+        value: "expired_count < keys_per_loop × stale_threshold"
+
+      - name: db-cursor
+        describe: "static 游标跨 cycle 保持，超时退出停在当前位置"
+        value: "current_db 每次 dbNext 递增，到 SERVER_DBSIZE 后回绕到 0"
+
+    internal_state:
+      current_db:
+        type: "static unsigned int"
+        desc: "公用扫描游标，跨 cycle 保持，保证 DB 级公平"
+      timelimit_exit:
+        type: "static int"
+        desc: "上次 SLOW 是否超时退出，调用方读取后决定是否调 FAST"
+      last_fast_cycle:
+        type: "static long long"
+        desc: "上次 FAST 触发时间 (μs)，用于频率控制"
+
+# =========================================================================
+# 状态机 (expire 模块内部)
+# =========================================================================
+state_machine:
+  note: "模式选择由调用方负责；本模块只负责执行"
+  initial: idle
+  states:
+    idle:
+      desc: "等待 cron 触发"
+      transitions:
+        - trigger: "调用方传入 SLOW"
+          to: running
+        - trigger: "调用方传入 FAST"
+          to: running
+    running:
+      desc: "遍历 DB、采样、删除过期 key"
+      transitions:
+        - trigger: "所有 DB 过期比例 ≤ 阈值"
+          to: idle
+        - trigger: "达到时间预算"
+          to: idle
+        - trigger: "循环轮数 ≥ 16"
+          to: idle
+
+# =========================================================================
+# 系统层模式跃迁（调用方 server.c 负责）
+# =========================================================================
+system_behavior:
+  note: "expire 模块暴露 timelimit_exit，调用方据此决策"
+  transitions:
+    - "serverCron 调 SLOW → 正常结束 → 下次继续 SLOW"
+    - "serverCron 调 SLOW → 超时 (timelimit_exit=1) → beforeSleep 调一次 FAST → 恢复 SLOW"
+  default: "SLOW"
+
+# =========================================================================
+# 配置参数
+# =========================================================================
+config:
+  active_expire_effort:
+    value: 1
+    range: [1, 10]
+    describe: "努力程度，越高采样越多、阈值越低、时间预算越宽松"
+    scope: "编译期常量 (config.h)"
+
+  ACTIVE_EXPIRE_MAX_LOOPS:
+    value: 16
+    describe: "单次 cycle 最多循环轮数"
+    scope: "编译期常量"
+
+  ACTIVE_EXPIRE_CYCLE_KEYS_PER_LOOP:
+    value: 20
+    describe: "基础采样数，effort 在此基础上递增"
+    scope: "编译期常量"
+
+  ACTIVE_EXPIRE_CYCLE_FAST_DURATION:
+    value: 1000
+    describe: "FAST 基础时间预算 (μs)"
+    scope: "编译期常量"
+
+  ACTIVE_EXPIRE_CYCLE_SLOW_TIME_PERC:
+    value: 25
+    describe: "SLOW 占用 cron 间隔的基础百分比"
+    scope: "编译期常量"
+
+  ACTIVE_EXPIRE_CYCLE_ACCEPTABLE_STALE:
+    value: 10
+    describe: "过期比例基础阈值 (%)，effort 在此基础上递减"
+    scope: "编译期常量"
+
+  ACTIVE_EXPIRE_MAX_DBS:
+    value: 16
+    describe: "单次 cycle 最多扫描的库数量"
+    scope: "编译期常量"
+
+# =========================================================================
+# 测试场景
+# =========================================================================
+test_scenarios:
+  - name: "全部过期 — 16 轮内清空"
+    given: "写入 N 个已过期 key"
+    when: "activeExpireCycle(SLOW)"
+    then: "所有过期 key 被删除"
+
+  - name: "无过期 — 零开销退出"
+    given: "expires dict 存在但无可过期 key"
+    when: "activeExpireCycle(SLOW)"
+    then: "直接返回，无 key 被删除"
+
+  - name: "超时退出 — FAST 强制返回"
+    given: "大量过期 key"
+    when: "activeExpireCycle(FAST)"
+    then: "超过 1ms 后强制返回，游标停在当前位置"
+
+  - name: "游标公平性"
+    given: "16 个 DB 全部有过期 key"
+    when: "多轮 cycle"
+    then: "每个 DB 都被访问，不卡在特定 DB"
+
+  - name: "rehash 中采样覆盖"
+    given: "expires dict 在 rehash 期间"
+    when: "触发随机采样"
+    then: "ht[0] 和 ht[1] 都覆盖到"
+
+  - name: "effort 效果"
+    given: "active_expire_effort = 10 vs 1"
+    when: "activeExpireCycle 运行"
+    then: "effort=10 采样更多、阈值更低、清理更激进"
+
+  - name: "惰性删除 — 过期 key 返回 nil"
+    given: "SET k v + EXPIRE k 0"
+    when: "GET k"
+    then: "返回 nil, EXISTS k 返回 0"
+
+  - name: "惰性删除 — 未过期 key 正常访问"
+    given: "SET k v + EXPIRE k 3600"
+    when: "GET k"
+    then: "返回 v, key 仍在"
