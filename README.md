@@ -2,9 +2,12 @@
 
 ![Architecture](./images/Architecture.png)
 
-**~5,000 行 C 语言**，从零手写核心数据结构（跳表、哈希表、SDS 动态字符串、RESP 协议解析），
+**~5,600 行 C 语言**，从零手写核心数据结构（跳表、哈希表、SDS 动态字符串、RESP 协议解析），
 实现了一个**兼容 Redis 有线协议**的高性能内存键值存储系统。
-经 `redis-benchmark` 压测，**P=64 SET 吞吐 143 万 ops/s，领先 Redis 6.0 同一环境 27%**。
+
+最新 `redis-benchmark` 纯内存压测（100 万请求, 50 并发, 5 轮均值）：
+**SET 80,302 ops/s、GET 80,417 ops/s，分别领先 Redis 7.0.15 约 7% 和 10%，且运行更稳定。**
+详见 [Benchmark 报告](docs/benchmark.md)。
 
 ---
 
@@ -27,19 +30,16 @@ redis-cli get msg
 
 ## 📊 Benchmark 总览
 
-测试环境：腾讯云轻量应用服务器 · Linux 5.15 · GCC · 单机 loopback  
-测试工具：`redis-benchmark`（Redis 官方压测工具，50 并发连接，5 轮取均值）
+测试环境：Linux 6.17 · GCC -O2 · 单机 loopback · 双方均关闭持久化  
+测试工具：`redis-benchmark`（50 并发, 100 万请求/轮, 5 轮取均值）
 
-| 场景 | **FlashKV** | **Redis 6.0** | FlashKV vs Redis |
-|------|:-----------:|:-------------:|:----------------:|
-| `SET` P=1 | **62,268** ops/s | 60,415 ops/s | **+3.1%** |
-| `GET` P=1 | **62,565** ops/s | 56,178 ops/s | **+11.4%** |
-| `SET` P=16 | **698,174** ops/s | 660,333 ops/s | **+5.7%** |
-| `GET` P=16 | 639,312 ops/s | **743,172** ops/s | -14.0% |
-| `SET` P=64 | **1,428,959** ops/s | 1,120,648 ops/s | **+27.5%** |
-| `GET` P=64 | **1,404,633** ops/s | 1,326,484 ops/s | **+5.9%** |
+| 测试 | **FlashKV** | **Redis 7.0.15** | 差异 | FlashKV 波动 |
+|------|:-----------:|:----------------:|:----:|:------------:|
+| SET | **80,302** ops/s | 74,893 ops/s | **+7.2%** | ±337 |
+| GET | **80,417** ops/s | 73,294 ops/s | **+9.7%** | ±793 |
 
-**6 项场景中 FlashKV 胜出 5 项。** 详细分析见 [Benchmark 报告](docs/benchmark.md)。
+**FlashKV 在纯内存 SET/GET 场景全面反超 Redis 7.0，且波动仅为 Redis 的 1/5~1/6。**
+详细数据及历史对比见 [Benchmark 报告](docs/benchmark.md)。
 
 ---
 
@@ -151,6 +151,9 @@ Dict entry → entry->val = (void*)when    ← 无 malloc，无 ValObj
 
 - 独立 `expires` 字典，key 指针共享（零内存冗余）
 - **惰性删除**：访问时检查是否过期，过期则删除
+- **主动过期（active expire）**：SLOW/FAST 双模式定期抽样删除
+  - `ACTIVE_EXPIRE_CYCLE_SLOW` — 100ms cron 定时触发，遍历所有 DB，每次限时 1ms
+  - `ACTIVE_EXPIRE_CYCLE_FAST` — beforeSleep 触发，仅在 SLOW 超时后激活，限时更短
 - 过期字典 value 为 64 位时间戳 inline（`valGet=dictValGetRef`，`valFree=NULL`），避免堆分配，实际一次TTL只需要一次额外堆分配。
 
 ### 8️⃣ 多数据库支持
@@ -175,7 +178,8 @@ Dict entry → entry->val = (void*)when    ← 无 malloc，无 ValObj
 - **两种持久化命令**：
   - `SAVE` — 阻塞当前线程，同步完成写盘
   - `BGSAVE` — `fork()` 子进程异步写盘（利用 COW），主线程立即返回 `+OK`
-- **启动自动加载**：编译选项 `RDB_LOAD_ENABLED` 控制，服务启动时若 `dump.rdb` 存在则自动恢复，否则初始化空库
+- **启动自动加载**：编译选项 `RDB_LOAD_ENABLED` 控制，服务启动时若 `dump.rdb` 存在则自动恢复
+- **当前限制**：自动快照策略（类似 Redis `save <seconds> <changes>`）尚未实现，仅支持手动触发 SAVE/BGSAVE
 
 ---
 
@@ -187,6 +191,9 @@ Dict entry → entry->val = (void*)when    ← 无 malloc，无 ValObj
 | `SELECT n` | 1 | 切换数据库 |
 | `SET key val` | 2 | 支持字符串 + 整数（VAL_INT 快速路径） |
 | `GET key` | 1 | 返回 bulk string / integer |
+| `APPEND key val` | 2 | 追加字符串到已有值末尾 |
+| `SETRANGE key offset val` | 3 | 覆盖指定偏移处的子串 |
+| `SETBIT key offset bit` | 3 | 设置指定偏移处的 bit 值 |
 | `DEL key` | 1 | 同时清除 TTL 记录 |
 | `EXISTS key` | 1 | 含惰性过期检查 |
 | `EXPIRE / PEXPIRE key sec/ms` | 2 | 秒级/毫秒级相对过期 |
@@ -229,15 +236,21 @@ printf '*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n'             | nc localhost 6379
 ### 运行 Benchmark
 
 ```bash
-# 安装 Redis（用于 redis-benchmark）
+# 安装 Redis（用于 redis-benchmark 和对比测试）
 sudo apt install redis-server redis-tools
 
-# 运行完整对比测试
-bash scripts/bench_compare.sh
+# 构建 FlashKV
+make flashkv
 
-# 或直接手工测试
-nohup ./flashkv &
-redis-benchmark -t set,get -n 100000 -P 64
+# FlashKV 压测（需先停 Redis 释放 6379）
+redis-cli shutdown 2>/dev/null
+./flashkv &
+redis-benchmark -t set,get -n 1000000 -c 50 --csv
+
+# Redis 对比（停 FlashKV 后启动 Redis）
+kill $(pgrep flashkv)
+redis-server --save "" --appendonly no --daemonize yes
+redis-benchmark -t set,get -n 1000000 -c 50 --csv
 ```
 
 ---
@@ -247,20 +260,28 @@ redis-benchmark -t set,get -n 100000 -P 64
 ```
 src/
 ├── main.c           # 入口
-├── server.c/.h     # epoll 事件循环 + 连接管理
-├── service.c/.h    # 命令注册 + 参数分发（20+ 命令）
+├── server.c/.h     # epoll 事件循环 + 连接管理 + beforeSleep
+├── service.c/.h    # 命令注册 + 参数分发（25+ 命令）
 ├── kvdb.c/.h       # 存储引擎封装（7 方法接口）
+├── expire.c/.h     # 主动过期引擎（SLOW/FAST 双模式）
 ├── dict.c/.h       # 哈希表核心 + 渐进式 rehash
 ├── dict_type.c/.h  # 虚函数表 + 类型实例
 ├── zskiplist.c/.h  # 跳表（p=0.25, span 跨度）
 ├── zset.c/.h       # ZSet 抽象层（dict + skiplist 双索引）
-├── resp.c/.h       # RESP 协议解析器
+├── resp.c/.h       # RESP 协议解析器（零拷贝递归下降）
 ├── sds.c/.h        # 动态字符串（柔性数组 + MurmurHash2）
 ├── io.c/.h         # 零拷贝 I/O 模块（双缓冲区 + 流式读写）
 ├── rdb.c/.h        # RDB 持久化（序列化/反序列化 + SAVE/BGSAVE）
+├── log.c/.h        # 日志模块
+├── config.h        # 全局配置参数（端口、DB 数、RDB 魔数等）
 ├── val_obj.h       # 值类型统一包装（STRING/LIST/ZSET/SET/HASH/INT）
 ├── ttl.h           # TTL 过期接口 + 时间工具
-├── log.h/c         # 日志模块
+├── object.h        # 对象类型定义
+spec/               # 模块语义规约（AI 读）
+├── expire.md
+contract/           # 形式化契约（YAML，AI 遵守）
+├── expire.yaml
+notes/              # 推导思路（人写，AI 不读）
 tests/
 ├── test_dict.c     # dict 单元测试
 ├── test_zset.c     # ZSet 单元测试（32 组）
@@ -270,11 +291,9 @@ tests/
 ├── test_io.c       # IO 模块单元测试
 ├── bench_dict.c    # dict 微基准（rehash 延迟分布）
 ├── bench_server.c  # 服务端吞吐 + 延迟基准
-scripts/
-├── bench_compare.sh # 与 Redis 6.0 自动对比脚本
 docs/
-├── benchmark-report.md            # 完整 Benchmark 报告
-├── benchmark.md                   # Benchmark 分析
+├── benchmark.md                   # Benchmark 报告（最新）
+├── benchmark-report.md            # 历史 Benchmark 报告
 ├── benchmark-sparse-vs-compact.md # 稀疏 vs 紧凑 rehash 对比
 ├── dict.md                        # Dict 设计文档
 ├── dict-rehash-review.md          # Dict Rehash 审查
@@ -284,9 +303,7 @@ docs/
 ├── service-layer.md               # 命令层设计文档
 ├── ttl.md                         # TTL 过期机制文档
 ├── io模块设计报告.md               # IO 模块设计报告
-├── io模块设计笔记.md               # IO 模块设计笔记
 ├── Database Backup设计报告.md      # RDB 持久化设计报告
-├── Database Backup设计笔记.md      # RDB 持久化设计笔记
 ├── test-report.md                 # 测试报告
 └── code-review-report.md          # 代码审查报告
 ```
@@ -299,18 +316,18 @@ docs/
 
 | 文档 | 内容 |
 |------|------|
-| [Benchmark 分析](docs/benchmark.md) | 与 Redis 6.0 全面对比 + 原始数据 + 测量不确定度讨论 |
+| [Benchmark 报告](docs/benchmark.md) | 最新纯内存压测 — FlashKV vs Redis 7.0.15, 含 5 轮原始数据 |
 | [Dict 哈希表](docs/dict.md) | 渐进式 rehash 两种策略、空桶跳过、内存分配 |
 | [Dict Rehash 审查](docs/dict-rehash-review.md) | Code Review 视角的 rehash 安全分析 |
 | [跳表 (zskiplist)](docs/zskiplist.md) | p=0.25 选择依据、span 跨度 ZRANK 原理 |
 | [RESP 协议解析](docs/resp.md) | 零拷贝递归下降、半包处理、整数优化路径 |
 | [epoll 服务器](docs/epoll-server.md) | Reactor 模式、syscall 优化、beforeSleep 变体 |
 | [Service 命令层](docs/service-layer.md) | 命令表分发、参数校验、响应组装 |
-| [TTL 过期机制](docs/ttl.md) | 惰性删除、时间精度、过期扫描策略 |
+| [TTL 过期机制](docs/ttl.md) | 惰性删除 + 主动过期 (SLOW/FAST)、时间精度 |
 | [IO 模块设计报告](docs/io模块设计报告.md) | 零拷贝双缓冲区、流式序列化、设计权衡 |
-| [IO 模块设计笔记](docs/io模块设计笔记.md) | IO 模块实现笔记与取舍 |
 | [RDB 持久化设计报告](docs/Database%20Backup设计报告.md) | 二进制协议、序列化/反序列化、多库支持、SAVE/BGSAVE |
-| [RDB 持久化设计笔记](docs/Database%20Backup设计笔记.md) | RDB 实现笔记与设计决策 |
+| [Expire 语义规约](spec/expire.md) | expire 模块规格，AI 代码生成输入 |
+| [Expire 形式化契约](contract/expire.yaml) | 不变量、函数契约、状态机（YAML） |
 | [测试报告](docs/test-report.md) | 各模块测试覆盖情况 |
 | [Code Review 报告](docs/code-review-report.md) | 索引越界、未初始化、资源泄漏审计 |
 
@@ -342,8 +359,7 @@ make test_io && ./test_io
 
 ## 🔜 下一步优化方向
 
+- **RDB 自动快照策略**：类似 Redis `save <seconds> <changes>`，在 cron 中检查 dirty 计数器，满足条件自动触发 BGSAVE。当前仅支持手动 SAVE/BGSAVE。
 - **主 dict 整数 inline 化**：TTL 过期字典已通过 `valGetRef` 将时间戳直接 inline 在 `entry->val` 里（零 ValObj），但主 dict 的整数值目前仍走 `malloc(sizeof(ValObj))`。
-- **`dictRehashData` 空桶连续跳过保护**：当前跳过空桶的 while 循环没有上限，若哈希表极稀疏可能导致单次调用耗时偏高。考虑加 `empty_visited` 计数器，撞空 N 次后提前返回。
-- 目前一次SET要进行至少3次堆分配，sds类型要进行4次，下一步可以考虑优化掉val_obj从而省去一次分配。
-- **entry + key 融合分配**：key 是不可变定长数据，SDS 的 `alloc`/`flags` 字段（17B header）对 key 是纯浪费。将 key 以 `[4B len][data]` 格式直接嵌入 `dictEntry` 尾部柔性数组，一次 `malloc` 搞定 entry + key，SET 路径从 3-4 次分配降到 2 次，100 万 key 省 ~13MB。expires 字典的 key 指针共享同一块内存，rehash 搬迁不受影响。
+- **entry + key 融合分配**：key 是不可变定长数据，SDS 的 `alloc`/`flags` 字段（17B header）对 key 是纯浪费。将 key 以 `[4B len][data]` 格式直接嵌入 `dictEntry` 尾部柔性数组，一次 `malloc` 搞定 entry + key，SET 路径从 3~4 次分配降到 2 次，100 万 key 省 ~13MB。expires 字典的 key 指针共享同一块内存，rehash 搬迁不受影响。
 ---
