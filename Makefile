@@ -16,7 +16,7 @@ test_io: tests/test_io.c src/io.c
 # ---------- Dict + KVDB（C 实现） ----------
 
 DICT_SRC  = src/dict.c src/dict_type.c
-KVDB_SRC  = src/kvdb.c
+KVDB_SRC  = src/kvdb.c src/expire.c
 DICT_DEPS = src/dict.h src/dict_type.h src/sds.h src/object.h src/kvdb.h src/ttl.h
 
 test_dict: tests/test_dict.c $(DICT_SRC) $(SDS_SRC) src/zskiplist.c src/zset.c src/io.c $(DICT_DEPS)
@@ -34,7 +34,7 @@ bench_server: tests/bench_server.c
 # ---------- 服务端 ----------
 
 SERVER_SRC = src/main.c src/server.c src/log.c src/service.c \
-             src/kvdb.c src/dict.c src/dict_type.c src/resp.c src/sds.c src/zskiplist.c src/zset.c \
+             src/kvdb.c src/expire.c src/dict.c src/dict_type.c src/resp.c src/sds.c src/zskiplist.c src/zset.c \
              src/rdb.c src/io.c
 SERVER_DEPS = src/server.h src/log.h src/service.h src/kvdb.h \
               src/dict.h src/dict_type.h src/resp.h src/sds.h src/object.h src/ttl.h src/zskiplist.h src/zset.h

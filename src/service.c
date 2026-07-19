@@ -10,6 +10,8 @@
 #include <time.h>
 #include "rdb.h"
 #include <unistd.h>
+
+struct service *service = NULL; /* 全局实例 */
 /* ================================================================
  *  RESP 响应写入（追加模式，支持 pipeline）
  *

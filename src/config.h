@@ -42,14 +42,21 @@ enum DataType
 #define ZSKIPLIST_MAXLEVEL 32
 #define ZSKIPLIST_P 0.25
 
+#define SERVER_CRON_INTERVAL_US 100000 /* cron 间隔 100ms (μs) */
+
 #define DICT_HT_INITIAL_SIZE 4
 /* ---- 定期抽样删除过期 key ---- */
 
-#define ACTIVE_EXPIRE_LOOKUPS 20      /* 每轮采样数 */
-#define ACTIVE_EXPIRE_MAX_LOOPS 16    /* 最多轮数 */
-#define ACTIVE_EXPIRE_THRESHOLD 5     /* 过期数 < 此值退出 (LOOKUPS * 0.25) */
-#define ACTIVE_EXPIRE_TIME_LIMIT 1000 /* 单次最大耗时 (us)，避免阻塞事件循环 */
 
+
+/* activeExpireCycle 模式 */
+#define ACTIVE_EXPIRE_CYCLE_SLOW 0
+#define ACTIVE_EXPIRE_CYCLE_FAST 1
+
+/* 1~10 */
+#define active_expire_effort 1 
+
+#define SERVER_DBSIZE 16
 #define SERVER_PORT 6379
 
 #define FLUSH_READ 1

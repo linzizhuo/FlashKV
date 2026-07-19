@@ -1,8 +1,5 @@
 #ifndef _REDP_H
 #define _REDP_H
-
-
-
 #include <stddef.h>
 
 // *3\r\n$3\r\nSET\r\n$4\r\nname\r\n$6\r\nflashkv\r\n

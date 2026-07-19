@@ -143,6 +143,7 @@ Client ──→ epoll 事件循环 ──→ RESP 解析 (零拷贝) ──→ 
 | 3 | **jemalloc 对比** | glibc malloc vs jemalloc 在 3500 行 C 程序下的真实性能差异 |
 | 4 | **CI 自动化** | 每次提交自动跑 `make all && ./test_*` + ASan 检测 |
 | 5 | **SET 堆分配优化** | 当前一次 SET 至少 3 次堆分配（ValObj + dict entry + ...），优化后目标 ≤2 次 |
+| 6 | **RESP_INT → DATA_INT 类型泄漏** | [service.c:221-223] SET 接受 `:N\r\n` 直接存为 DATA_INT，[service.c:191-192] GET 返回 `:N\r\n` 而非 `$L\r\nN\r\n`。RESP Integer 是传输层控制/应答标记，不应泄漏到存储层。修复：SET 侧将 int snprintf 为字符串统一存 DATA_STRING，GET 侧删除 DATA_INT 特殊分支。RDB 的 DATA_INT 读写路径保留以兼容旧文件 |
 
 ### 扩展方向（中长期）
 

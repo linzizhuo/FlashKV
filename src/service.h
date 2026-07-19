@@ -11,6 +11,9 @@ struct service
     unsigned int dbsize;
 };
 
+/* 全局实例（expire 等模块通过它访问服务层） */
+extern struct service *service;
+
 /* 前向声明，避免循环依赖 */
 struct Connection;
 
@@ -25,6 +28,12 @@ typedef struct
     int         arity;   /* 参数个数（不含命令名），-1 变长 */
     CmdHandler  handler;
 } Command;
+
+/* 定期抽样 */
+void activeExpireCycle(int type);
+/* SLOW→FAST 升级：调用方在 epoll_wait 前调用。
+ * 内部检查 timelimit_exit + 频率控制，决定是否触发 FAST。 */
+void activeExpireTryFast(void);
 
 /* ---- 生命周期 ---- */
 int  serviceInit(struct service *svc, unsigned int dbsize);

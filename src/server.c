@@ -21,15 +21,19 @@ static long long mstime(void);
 
 /* ---------- 辅助函数 ---------- */
 
-static int setNonBlock(int fd) {
+static int setNonBlock(int fd)
+{
     int flags = fcntl(fd, F_GETFL, 0);
-    if (flags == -1) return -1;
+    if (flags == -1)
+        return -1;
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-static int listenOnPort(int port) {
+static int listenOnPort(int port)
+{
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd == -1) {
+    if (fd == -1)
+    {
         LOG_ERROR("socket: %s", strerror(errno));
         return -1;
     }
@@ -39,23 +43,26 @@ static int listenOnPort(int port) {
 
     struct sockaddr_in addr = {
         .sin_family = AF_INET,
-        .sin_port   = htons(port),
-        .sin_addr   = { .s_addr = htonl(INADDR_ANY) },
+        .sin_port = htons(port),
+        .sin_addr = {.s_addr = htonl(INADDR_ANY)},
     };
 
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == -1) {
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == -1)
+    {
         LOG_ERROR("bind(%d): %s", port, strerror(errno));
         close(fd);
         return -1;
     }
 
-    if (listen(fd, 128) == -1) {
+    if (listen(fd, 128) == -1)
+    {
         LOG_ERROR("listen: %s", strerror(errno));
         close(fd);
         return -1;
     }
 
-    if (setNonBlock(fd) == -1) {
+    if (setNonBlock(fd) == -1)
+    {
         close(fd);
         return -1;
     }
@@ -66,23 +73,27 @@ static int listenOnPort(int port) {
 
 /* ---------- 连接管理 ---------- */
 
-static Connection *connNew(int fd, struct service *svc) {
+static Connection *connNew(int fd, struct service *svc)
+{
     Connection *c = malloc(sizeof(*c));
-    if (!c) return NULL;
-    c->fd       = fd;
-    c->state    = CONN_STATE_READ;
-    c->rbuf     = NULL;
-    c->wbuf     = NULL;
-    c->svc      = svc;
-    c->dbnum    = 0;
+    if (!c)
+        return NULL;
+    c->fd = fd;
+    c->state = CONN_STATE_READ;
+    c->rbuf = NULL;
+    c->wbuf = NULL;
+    c->svc = svc;
+    c->dbnum = 0;
 
     c->rbuf = malloc(BUF_SIZE);
-    if (!c->rbuf) goto fail;
+    if (!c->rbuf)
+        goto fail;
     c->rcap = BUF_SIZE;
     c->rlen = 0;
 
     c->wbuf = malloc(BUF_SIZE);
-    if (!c->wbuf) goto fail;
+    if (!c->wbuf)
+        goto fail;
     c->wcap = BUF_SIZE;
     c->wlen = 0;
 
@@ -101,8 +112,10 @@ fail:
     return NULL;
 }
 
-static void connFree(Connection *c) {
-    if (!c) return;
+static void connFree(Connection *c)
+{
+    if (!c)
+        return;
     LOG_DEBUG("close fd=%d", c->fd);
     close(c->fd);
     free(c->rbuf);
@@ -121,43 +134,57 @@ static void connFree(Connection *c) {
  * skip_read=true: 不读 socket，仅消费 rbuf 已有数据（handleWrite 尾触发）。
  * skip_read=false: 先读 socket，再消费 rbuf（事件循环 EPOLLIN）。 */
 
-static void handleRead(Connection *c, int skip_read) {
-    if (!skip_read) {
+static void handleRead(Connection *c, int skip_read)
+{
+    if (!skip_read)
+    {
         size_t space = c->rcap - c->rlen - 1;
-        if (space == 0) {
+        if (space == 0)
+        {
             addReplyError(c, "request too large");
             c->state = CONN_STATE_WRITE;
-            c->rlen  = 0;
+            c->rlen = 0;
             return;
         }
 
         ssize_t n = read(c->fd, c->rbuf + c->rlen, space);
-        if (n > 0) {
+        if (n > 0)
+        {
             c->rlen += (size_t)n;
             c->rbuf[c->rlen] = '\0';
             LOG_DEBUG("recv fd=%d (%zd bytes)", c->fd, n);
-        } else if (n == 0) {
+        }
+        else if (n == 0)
+        {
             c->state = CONN_STATE_CLOSE;
             return;
-        } else if (errno != EAGAIN) {
+        }
+        else if (errno != EAGAIN)
+        {
             LOG_WARN("read fd=%d: %s", c->fd, strerror(errno));
             c->state = CONN_STATE_CLOSE;
             return;
         }
     }
 
-    if (c->rlen == 0) return;
+    if (c->rlen == 0)
+        return;
 
     {
         int processed = 0;
-        while (c->rlen > 0 && processed < MAX_PIPELINE_BATCH) {
+        while (c->rlen > 0 && processed < MAX_PIPELINE_BATCH)
+        {
             RespObj obj;
             int ret = respParse(c->rbuf, c->rlen, &obj);
 
-            if (ret > 0) {
-                if (obj.type == RESP_ARRAY && obj.len > 0) {
+            if (ret > 0)
+            {
+                if (obj.type == RESP_ARRAY && obj.len > 0)
+                {
                     processCommand(c, c->svc, obj.elements, (int)obj.len);
-                } else {
+                }
+                else
+                {
                     addReplyError(c, "expected array");
                 }
                 if ((size_t)ret < c->rlen)
@@ -166,36 +193,48 @@ static void handleRead(Connection *c, int skip_read) {
                 respFreeObj(&obj);
                 c->state = CONN_STATE_WRITE;
                 processed++;
-
-            } else if (ret == AGAIN) {
-                if (c->rlen >= c->rcap - 1) {
+            }
+            else if (ret == AGAIN)
+            {
+                if (c->rlen >= c->rcap - 1)
+                {
                     addReplyError(c, "request too large");
                     c->state = CONN_STATE_WRITE;
-                    c->rlen  = 0;
-                } else if (processed == 0) {
+                    c->rlen = 0;
+                }
+                else if (processed == 0)
+                {
                     c->state = CONN_STATE_READ;
                 }
                 break;
-
-            } else {
+            }
+            else
+            {
                 addReplyError(c, "protocol error");
                 c->state = CONN_STATE_WRITE;
-                c->rlen  = 0;
+                c->rlen = 0;
                 break;
             }
         }
     }
 }
 
-static void handleWrite(Connection *c) {
-    while (c->wlen > 0) {
+static void handleWrite(Connection *c)
+{
+    while (c->wlen > 0)
+    {
         ssize_t n = write(c->fd, c->wbuf, c->wlen);
-        if (n > 0) {
+        if (n > 0)
+        {
             c->wlen -= (size_t)n;
             memmove(c->wbuf, c->wbuf + n, c->wlen);
-        } else if (n == -1 && errno == EAGAIN) {
+        }
+        else if (n == -1 && errno == EAGAIN)
+        {
             return;
-        } else {
+        }
+        else
+        {
             LOG_WARN("write fd=%d: %s", c->fd, strerror(errno));
             c->state = CONN_STATE_CLOSE;
             return;
@@ -204,9 +243,11 @@ static void handleWrite(Connection *c) {
 
     /* wbuf 清空后，若 rbuf 还有未消费数据（handleRead 被 MAX_PIPELINE_BATCH 截断），
      * 立即触发下一轮处理，不等待 EPOLLIN */
-    if (c->rlen > 0) {
+    if (c->rlen > 0)
+    {
         handleRead(c, 1);
-        if (c->state == CONN_STATE_WRITE) {
+        if (c->state == CONN_STATE_WRITE)
+        {
             handleWrite(c);
         }
         return;
@@ -215,20 +256,24 @@ static void handleWrite(Connection *c) {
     c->state = CONN_STATE_READ;
 }
 
-static void handleAccept(struct Server *s, int epoll_fd) {
+static void handleAccept(struct Server *s, int epoll_fd)
+{
     struct sockaddr_in addr;
     socklen_t addrlen = sizeof(addr);
 
     int fd = accept(s->listen_fd, (struct sockaddr *)&addr, &addrlen);
-    if (fd == -1) {
-        if (errno != EAGAIN) {
+    if (fd == -1)
+    {
+        if (errno != EAGAIN)
+        {
             LOG_ERROR("accept: %s", strerror(errno));
         }
         return;
     }
 
     Connection *c = connNew(fd, &s->svc);
-    if (!c) {
+    if (!c)
+    {
         close(fd);
         return;
     }
@@ -237,13 +282,15 @@ static void handleAccept(struct Server *s, int epoll_fd) {
         .events = EPOLLIN,
         .data.ptr = c,
     };
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) == -1) {
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) == -1)
+    {
         LOG_ERROR("epoll_ctl add fd=%d: %s", fd, strerror(errno));
         connFree(c);
     }
 }
 
-static void handleClose(Connection *c, int epoll_fd) {
+static void handleClose(Connection *c, int epoll_fd)
+{
     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, c->fd, NULL);
     connFree(c);
 }
@@ -259,27 +306,36 @@ static long long mstime(void)
 
 static void databasesCron(struct Server *s)
 {
-    /* 每次只跑一个库，轮转，16 个库 1.6 秒一圈 */
-    kvdbActiveExpireCycle(s->svc.kvs[s->cron_db]);
+    /* activeExpireCycle 内部遍历全部 DB，cron_db 仅用于 TryResize 轮转 */
+    activeExpireCycle(ACTIVE_EXPIRE_CYCLE_SLOW);
     kvdbTryResize(s->svc.kvs[s->cron_db]);
     if (++s->cron_db >= s->svc.dbsize)
         s->cron_db = 0;
 }
 
+static void beforeSleep()
+{
+    activeExpireTryFast();
+}
+
 /* ---------- 服务器生命周期 ---------- */
 
-struct Server *serverCreate(int port) {
+struct Server *serverCreate(int port)
+{
     struct Server *s = malloc(sizeof(*s));
-    if (!s) return NULL;
+    if (!s)
+        return NULL;
 
     s->listen_fd = listenOnPort(port);
-    if (s->listen_fd == -1) {
+    if (s->listen_fd == -1)
+    {
         free(s);
         return NULL;
     }
 
     s->epoll_fd = epoll_create1(0);
-    if (s->epoll_fd == -1) {
+    if (s->epoll_fd == -1)
+    {
         LOG_ERROR("epoll_create: %s", strerror(errno));
         close(s->listen_fd);
         free(s);
@@ -291,7 +347,8 @@ struct Server *serverCreate(int port) {
     s->cron_db = 0;
 
     /* 初始化服务层（16 个数据库） */
-    if (serviceInit(&s->svc, 16) != OK) {
+    if (serviceInit(&s->svc, 16) != OK)
+    {
         LOG_ERROR("serviceInit failed");
         close(s->epoll_fd);
         close(s->listen_fd);
@@ -304,7 +361,8 @@ struct Server *serverCreate(int port) {
         .events = EPOLLIN,
         .data.fd = s->listen_fd,
     };
-    if (epoll_ctl(s->epoll_fd, EPOLL_CTL_ADD, s->listen_fd, &ev) == -1) {
+    if (epoll_ctl(s->epoll_fd, EPOLL_CTL_ADD, s->listen_fd, &ev) == -1)
+    {
         LOG_ERROR("epoll_ctl add listen: %s", strerror(errno));
         serviceFree(&s->svc);
         close(s->epoll_fd);
@@ -317,42 +375,57 @@ struct Server *serverCreate(int port) {
     return s;
 }
 
-void serverRun(struct Server *s) {
-    if (!s) return;
+void serverRun(struct Server *s)
+{
+    if (!s)
+        return;
 
     struct epoll_event events[MAX_EVENTS];
     LOG_INFO("server started");
 
-    while (!s->stop) {
+    while (!s->stop)
+    {
         int n = epoll_wait(s->epoll_fd, events, MAX_EVENTS, 100);
-        if (n == -1) {
-            if (errno == EINTR) continue; /* 被信号打断 */
+        if (n == -1)
+        {
+            if (errno == EINTR)
+                continue; /* 被信号打断 */
             LOG_ERROR("epoll_wait: %s", strerror(errno));
             break;
         }
 
-        for (int i = 0; i < n; i++) {
-            if (events[i].data.fd == s->listen_fd) {
+        for (int i = 0; i < n; i++)
+        {
+            if (events[i].data.fd == s->listen_fd)
+            {
                 /* 新连接 */
                 handleAccept(s, s->epoll_fd);
-            } else {
+            }
+            else
+            {
                 Connection *c = (Connection *)events[i].data.ptr;
-                if (events[i].events & EPOLLIN) {
+                if (events[i].events & EPOLLIN)
+                {
                     handleRead(c, 0);
                     /* handleRead 处理完后如果积压了回复，立即尝试写回，
                      * 避免多等一轮 epoll_wait（类似 Redis beforeSleep 的思路） */
                     if (c->state == CONN_STATE_WRITE)
                         handleWrite(c);
                 }
-                if (events[i].events & EPOLLOUT) {
+                if (events[i].events & EPOLLOUT)
+                {
                     handleWrite(c);
                 }
-                if (c->state == CONN_STATE_CLOSE) {
+                if (c->state == CONN_STATE_CLOSE)
+                {
                     handleClose(c, s->epoll_fd);
-                } else {
+                }
+                else
+                {
                     /* 根据需要更新 epoll 事件类型 */
                     uint32_t ev_mask = EPOLLIN;
-                    if (c->state == CONN_STATE_WRITE) ev_mask |= EPOLLOUT;
+                    if (c->state == CONN_STATE_WRITE)
+                        ev_mask |= EPOLLOUT;
                     struct epoll_event ev = {
                         .events = ev_mask,
                         .data.ptr = c,
@@ -364,17 +437,22 @@ void serverRun(struct Server *s) {
 
         /* 每 100ms 执行一次定期任务（过期 key 抽样删除） */
         long long now = mstime();
-        if (now - s->last_cron_ms >= 100) {
+        if (now - s->last_cron_ms >= SERVER_CRON_INTERVAL_US / 1000)
+        {
             databasesCron(s);
             s->last_cron_ms = now;
         }
+
+        beforeSleep(); // 每次轮询都会判断
     }
 
     LOG_INFO("server stopped");
 }
 
-void serverDestroy(struct Server *s) {
-    if (!s) return;
+void serverDestroy(struct Server *s)
+{
+    if (!s)
+        return;
     close(s->listen_fd);
     close(s->epoll_fd);
     serviceFree(&s->svc);

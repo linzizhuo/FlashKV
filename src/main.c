@@ -29,6 +29,7 @@ int main(int argc, char **argv) {
         LOG_ERROR("failed to create server");
         return 1;
     }
+    service = &g_s->svc; // ← 全局 service 指针，expire 模块通过它访问服务层
 
     serverRun(g_s);
     serverDestroy(g_s);

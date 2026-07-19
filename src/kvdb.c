@@ -1,10 +1,7 @@
-#define _POSIX_C_SOURCE 199309L /* clock_gettime, CLOCK_MONOTONIC */
-
 #include "kvdb.h"
 #include "dict_type.h"
 #include "ttl.h"
 #include "sds.h"
-#include "config.h"
 #include <stdbool.h>
 #include <stdlib.h>
 
@@ -167,56 +164,8 @@ int kvdbPersist(kvdb *kv, const void *key)
     return 1;
 }
 
-static long long ustime(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (long long)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
-}
-
-void kvdbActiveExpireCycle(kvdb *kv)
-{
-    /* 快速路径：无 TTL 的 key */
-    if (kv->expires->ht[0].used == 0 && kv->expires->ht[1].used == 0)
-        return;
-
-    time_t now = time(NULL);
-    long long start = ustime();
-
-    for (int loop = 0; loop < ACTIVE_EXPIRE_MAX_LOOPS; loop++)
-    {
-        int expired = 0;
-
-        for (int i = 0; i < ACTIVE_EXPIRE_LOOKUPS; i++)
-        {
-            dictEntry *de = dictGetRandomKey(kv->expires);
-            if (!de)
-                goto done; /* expires 被删空 */
-
-            sds key = (sds)dictEntryGetKey(de);
-            tstamp_t *when = (tstamp_t *)dictEntryGetVal(kv->expires, de);
-
-            if (now >= (time_t)(*when))
-            {
-                dictDelete(kv->expires, key, NULL);
-                dictDelete(kv->dict, key, NULL);
-                expired++;
-            }
-        }
-
-        /* 过期比例 < 25%：没必要继续挖 */
-        if (expired < ACTIVE_EXPIRE_THRESHOLD)
-            break;
-
-        /* 超时保护：不阻塞事件循环超过 TIME_LIMIT us */
-        if (ustime() - start > ACTIVE_EXPIRE_TIME_LIMIT)
-            break;
-    }
-done:;
-}
-
 /* 填充率 < 10% 时缩容，对主 dict 和 expires dict 对称处理。
- * 与 kvdbActiveExpireCycle 在同一 cron 频率被调用 (100ms, 轮转 DB)。
+ * 与 activeExpireCycle  在同一 cron 频率被调用 (100ms, 轮转 DB)。
  *
  * 注意：dictShrink 内部走 dictExpand → rehash，搬迁仍由
  * 后续读写操作的 dictRehashData(d,1) 渐进完成，不会在这里阻塞。 */
