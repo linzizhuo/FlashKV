@@ -1,7 +1,7 @@
 #include "rdb.h"
 #include "kvdb.h"
 #include "sds.h"
-#include "val_obj.h"
+#include "object.h"
 #include "zset.h"
 #include "config.h"
 #include <stdio.h>

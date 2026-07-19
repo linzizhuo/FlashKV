@@ -1,7 +1,7 @@
 #include "dict.h"
 #include "dict_type.h"
 #include "sds.h"
-#include "val_obj.h"
+#include "object.h"
 #include <stdio.h>
 #include <assert.h>
 #include <string.h>
