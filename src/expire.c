@@ -15,10 +15,9 @@
 #define ACTIVE_EXPIRE_CYCLE_SLOW_TIME_PERC 25
 /* 抽样中过期 key 占比超过 10%，认为过期残留严重，继续再扫一轮 */
 #define ACTIVE_EXPIRE_CYCLE_ACCEPTABLE_STALE 10
-/* 每次抽样轮次 */
-#define ACTIVE_EXPIRE_MAX_LOOPS 16 /* 最多轮数 */
 /* 单次 cycle 最多扫描的库数量 */
 #define ACTIVE_EXPIRE_MAX_DBS 16
+#define min(a, b) ((a) < (b) ? (a) : (b))
 
 static long long ustime(void)
 {
@@ -34,7 +33,7 @@ static long long last_fast_cycle = 0; /* 上次 FAST 触发时间 (us) */
     对service的数据库根据SERVER_DBSIZE进行追加计算
     不接受空指针
 */
-static void dbNext(unsigned int* dbidx)
+static void dbNext(unsigned int *dbidx)
 {
     assert(dbidx);
     (*dbidx)++;
@@ -49,7 +48,7 @@ void activeExpireTryFast(void)
 {
     unsigned long effort = active_expire_effort - 1;
     long long config_cycle_fast_duration = ACTIVE_EXPIRE_CYCLE_FAST_DURATION +
-                                               ACTIVE_EXPIRE_CYCLE_FAST_DURATION / 4 * effort;
+                                           ACTIVE_EXPIRE_CYCLE_FAST_DURATION / 4 * effort;
     /* SLOW 正常结束，不需要 FAST 补偿 */
     if (!timelimit_exit)
         return;
@@ -83,76 +82,75 @@ void activeExpireCycle(int type)
                   config_cycle_acceptable_stale = ACTIVE_EXPIRE_CYCLE_ACCEPTABLE_STALE -
                                                   effort;
 
-    /* ---- 时间预算 ---- */
-    long long start = ustime();
-    long long timelimit;
-    if (type == ACTIVE_EXPIRE_CYCLE_FAST) {
-        timelimit = config_cycle_fast_duration;
-        last_fast_cycle = start; // ← 加上这行
-    } else {
+    long long start = ustime(), timelimit; // 开始时间
+    if (type == ACTIVE_EXPIRE_CYCLE_SLOW)
+    {
+        timelimit_exit = 0; // 重置
         timelimit = SERVER_CRON_INTERVAL_US * config_cycle_slow_time_perc / 100;
     }
-
-    timelimit_exit = 0;
-
-    unsigned int dbs_per_call = ACTIVE_EXPIRE_MAX_DBS;
-    if (dbs_per_call > service->dbsize)
-        dbs_per_call = service->dbsize;
-
-    for (unsigned int i = 0; i < dbs_per_call; i++, dbNext(&current_db))
+    else if (type == ACTIVE_EXPIRE_CYCLE_FAST)
     {
+        last_fast_cycle = start; // 执行时间。
+        timelimit = config_cycle_fast_duration;
+    }
+    else assert(0); // 敢乱传参我就死给你看😡
+    int loop = 0, repeat = 0;
+    for (int i = 0; i < ACTIVE_EXPIRE_MAX_DBS && !repeat; i++, dbNext(&current_db))
+    {
+
         kvdb *db = service->kvs[current_db];
         struct dict *expires = kvdbGetExpires(db);
         struct dict *keys = kvdbGetDict(db);
 
-        /* 当前 DB 无过期 key，跳过 */
-        if (dictSize(expires) == 0) continue;
-
-        int loop = 0;
-        unsigned long expired, sampled;
-
-        do {
-            sampled = 0;
-            expired = 0;
-            time_t now = time(NULL);
-
-            for (unsigned long j = 0; j < config_keys_per_loop; j++) {
-                /* 时间预算检查 */
-                if ((ustime() - start) > timelimit) {
-                    if (type == ACTIVE_EXPIRE_CYCLE_SLOW)
-                        timelimit_exit = 1;
-                    return;
-                }
-
-                /* 随机采样一个带 TTL 的 key */
+        if (dictSize(expires) == 0)
+            continue;
+        repeat = 1;
+        do
+        {
+            int sampled = 0; // 每轮 do-while 清零
+            int expired = 0; // 每轮 do-while 清零
+            int forlen = min(dictSize(expires), config_keys_per_loop);
+            for (int j = 0; j < forlen; j++)
+            {
                 dictEntry *de = dictGetRandomKey(expires);
-                if (!de) break; /* expires dict 已被清空 */
+                if (!de)
+                    break;
 
                 sampled++;
                 hash_t hash = dictEntryGetHash(de);
                 sds key = dictEntryGetKey(de);
                 time_t expire_time = (time_t)(*(void **)dictEntryGetVal(expires, de));
-
-                if (now >= expire_time) {
-                    /* 先删主 dict，再删 expires（顺序保证 key 指针安全：见 contract） */
+                time_t now = time(NULL);
+                if (now >= expire_time)
+                {
                     dictDelete(keys, key, &hash);
                     dictDelete(expires, key, &hash);
                     expired++;
                 }
-
-                /* expires 已空则停止本 DB 的采样 */
-                if (dictSize(expires) == 0) break;
             }
 
             loop++;
-        } while (expired * 100 > sampled * config_cycle_acceptable_stale
-                 && loop < ACTIVE_EXPIRE_MAX_LOOPS);
+            /* 库已清空，正常退出 */
+            if (dictSize(expires) == 0)
+            {
+                repeat = 0;
+                break;
+            }
 
-        /* 完成一个 DB 后检查时间预算 */
-        if ((ustime() - start) > timelimit) { 
-            if (type == ACTIVE_EXPIRE_CYCLE_SLOW) 
-                timelimit_exit = 1;
-            return;
-        }
+            /* 过期比例低于阈值，正常退出 */
+            if (expired * 100 <= sampled * config_cycle_acceptable_stale)
+            {
+                repeat = 0;
+                break;
+            }
+
+            /* 每 16 次 do-while 检查时间预算 */
+            if ((loop & 0xf) == 0 && ustime() - start > timelimit)
+            {
+                if (type == ACTIVE_EXPIRE_CYCLE_SLOW)
+                    timelimit_exit = 1;
+                break; /* repeat=1，超时退出 */
+            }
+        } while (repeat);            
     }
 }
