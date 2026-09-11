@@ -2,6 +2,7 @@
 #include "sds.h"
 #include <stddef.h>
 #include <stdlib.h>
+#include <time.h>
 #define ROTL64(x, r) (((x) << (r)) | ((x) >> (64 - (r))))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #include "config.h"
@@ -190,6 +191,33 @@ static int dictRehashData(struct dict *d, unsigned long number)
 
     if (d->ht[0].used == 0)
         dictRehashComplete(d);
+
+    return OK;
+}
+
+static long long dictMstime(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* 时间预算内推进渐进式 rehash —— 供 cron 在无请求时驱动主表。
+ * 未在 rehash 时 early-return（只读 rehashidx，近乎零开销）。
+ * 每轮搬 DICT_REHASH_STEP_BUCKETS 个非空桶，累计超预算立即返回，
+ * 保证单次调用的墙钟开销有界。单线程模型，无并发调用。 */
+int dictRehashMilliseconds(struct dict *d, int ms)
+{
+    if (!dictIsRehashing(d))
+        return OK;
+
+    long long start = dictMstime();
+    do
+    {
+        dictRehashData(d, DICT_REHASH_STEP_BUCKETS);
+        if (!dictIsRehashing(d))
+            break; /* ht[1] 已顶替 ht[0]，rehash 收尾完成 */
+    } while (dictMstime() - start < ms);
 
     return OK;
 }

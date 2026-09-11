@@ -306,9 +306,11 @@ static long long mstime(void)
 
 static void databasesCron(struct Server *s)
 {
-    /* activeExpireCycle 内部遍历全部 DB，cron_db 仅用于 TryResize 轮转 */
+    /* activeExpireCycle 内部遍历全部 DB，cron_db 仅用于 TryResize/Rehash 轮转 */
     activeExpireCycle(ACTIVE_EXPIRE_CYCLE_SLOW);
-    kvdbTryResize(s->svc.kvs[s->cron_db]);
+    kvdb *cur = s->svc.kvs[s->cron_db];
+    kvdbRehashStep(cur, DICT_REHASH_CRON_MS); /* 无请求也推进主表 rehash */
+    kvdbTryResize(cur);
     if (++s->cron_db >= s->svc.dbsize)
         s->cron_db = 0;
 }

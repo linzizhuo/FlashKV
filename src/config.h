@@ -45,6 +45,11 @@ enum DataType
 #define SERVER_CRON_INTERVAL_US 100000 /* cron 间隔 100ms (μs) */
 
 #define DICT_HT_INITIAL_SIZE 4
+
+/* ---- cron 驱动的渐进式 rehash ---- */
+#define DICT_REHASH_CRON_MS 1        /* 每 tick 单个 DB 的 rehash 时间预算 (ms) */
+#define DICT_REHASH_STEP_BUCKETS 100 /* 单次 dictRehashData 搬迁的非空桶数 */
+
 /* ---- 定期抽样删除过期 key ---- */
 
 

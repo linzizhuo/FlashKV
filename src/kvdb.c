@@ -177,6 +177,14 @@ void kvdbTryResize(kvdb *kv)
         dictShrink(kv->expires);
 }
 
+/* 主表不像 expires 表那样被 activeExpireCycle 的 dictGetRandomKey 顺带推进。
+ * 扩容/缩容触发的主表 rehash，无请求时会停滞 → ht[0]+ht[1] 并存，
+ * 内存翻倍且每次查找查两张表。由 databasesCron 定期驱动。 */
+void kvdbRehashStep(kvdb *kv, int ms)
+{
+    dictRehashMilliseconds(kv->dict, ms);
+}
+
 /* ---- ZSET ---- */
 
 zset *kvdbGetZset(kvdb *kv, const void *key, int *found)

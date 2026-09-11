@@ -37,6 +37,7 @@ int       kvdbPersist(kvdb *kv, const void *key);  /* 1=已移除 0=无TTL */
 
 /* ---- 定期缩容 ---- */
 void      kvdbTryResize(kvdb *kv);         /* 填充率 < 10% 时缩主 dict + expires dict */
+void      kvdbRehashStep(kvdb *kv, int ms); /* cron 驱动主表渐进式 rehash（expires 由 activeExpireCycle 覆盖） */
 
 /* ---- ZSET ---- */
 zset *kvdbGetZset(kvdb *kv, const void *key, int *found);

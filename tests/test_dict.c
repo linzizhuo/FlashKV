@@ -391,6 +391,93 @@ static void test_rehash_complete(void)
     printf("   ✅\n");
 }
 
+/* 无请求时由 cron 驱动 rehash —— 覆盖「rehash 停滞」bug 场景。
+ * 触发 rehash 后不做任何 find/add/delete，只反复调 dictRehashMilliseconds，
+ * 验证 rehash 能走完、两表合并、数据无丢失。 */
+static void test_rehash_cron_drive(void)
+{
+    printf("=== test_rehash_cron_drive ===\n");
+    const int N = 1000;
+    struct dict *d = dictnew(4, &dictTypeSds);
+
+    for (int i = 0; i < N; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "r%d", i);
+        assert(dictAdd(d, sdsnew(buf), makeInt(i), NULL) == OK);
+    }
+    /* 先驱动到干净状态，排除插入过程顺带完成的 rehash */
+    while (d->rehashidx >= 0)
+        assert(dictRehashMilliseconds(d, 1) == OK);
+    assert(d->ht[1].table == NULL);
+    assert(dictTotalUsed(d) == (unsigned long)N);
+
+    /* ---- A. 扩容：少量数据 + 大目标表 → 稀疏 rehash ---- */
+    assert(dictExpand(d, 14) == OK);   /* ht[1] = 16384 */
+    assert(d->rehashidx >= 0);
+    unsigned long slots_during = dictSlots(d);
+    printf("   扩容 rehash 中: slots=%lu (两表并存)\n", slots_during);
+
+    int calls = 0;
+    while (d->rehashidx >= 0)          /* 只靠 cron 驱动器推进 */
+    {
+        assert(dictRehashMilliseconds(d, 1) == OK);
+        if (++calls > 100000) { printf("   ERROR: 扩容 rehash 未完成\n"); assert(0); }
+    }
+    assert(d->ht[1].table == NULL);
+    assert(d->ht[0].size == 16384);
+    assert(dictSlots(d) == 16384 && dictSlots(d) < slots_during);
+    assert(dictTotalUsed(d) == (unsigned long)N);
+    printf("   %d 次调用后扩容 rehash 完成, slots→%lu\n", calls, dictSlots(d));
+
+    /* 数据无丢失 */
+    for (int i = 0; i < N; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "r%d", i);
+        sds k = sdsnew(buf);
+        ValObj *v = (ValObj *)dictfind(d, k, NULL);
+        assert(v != NULL && v->val.ll == i);
+        sdsfree(k);
+    }
+
+    /* ---- B. 缩容：删掉大部分 key → 稀疏 rehash ---- */
+    for (int i = 10; i < N; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "r%d", i);
+        sds k = sdsnew(buf);
+        assert(dictDelete(d, k, NULL) == OK);
+        sdsfree(k);
+    }
+    assert(dictTotalUsed(d) == 10);
+    assert(dictNeedsResize(d));
+    assert(dictShrink(d) == OK);
+    assert(d->rehashidx >= 0);
+
+    calls = 0;
+    while (d->rehashidx >= 0) {
+        assert(dictRehashMilliseconds(d, 1) == OK);
+        if (++calls > 100000) { printf("   ERROR: 缩容 rehash 未完成\n"); assert(0); }
+    }
+    assert(d->ht[1].table == NULL);
+    assert(d->ht[0].size == 16);
+    assert(dictTotalUsed(d) == 10);
+    printf("   %d 次调用后缩容 rehash 完成, ht[0].size→%lu\n", calls, d->ht[0].size);
+
+    for (int i = 0; i < 10; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "r%d", i);
+        sds k = sdsnew(buf);
+        assert(dictfind(d, k, NULL) != NULL);
+        sdsfree(k);
+    }
+
+    /* 未在 rehash 时调用应是无副作用 no-op */
+    assert(dictRehashMilliseconds(d, 1) == OK);
+    assert(d->ht[1].table == NULL);
+
+    dictfree(d);
+    printf("   ✅\n");
+}
+
 int main(void)
 {
     printf("======== Dict 单元测试 ========\n\n");
@@ -410,6 +497,7 @@ int main(void)
     test_rehash_delete_during();
     test_rehash_replace_trigger();
     test_rehash_complete();
+    test_rehash_cron_drive();
 
     printf("\n======== 🎉 全部测试通过 ========\n");
     return 0;

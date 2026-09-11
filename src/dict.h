@@ -87,6 +87,7 @@ int  dictExpand(struct dict *d, unsigned long n);      /* 扩/缩至 2^n，n 与
 int  dictShrink(struct dict *d);                       /* 缩至 >= used 的最小尺寸 */
 int  dictNeedsResize(const struct dict *d);            /* size > used*10 且 size > 4 */
 unsigned long dictSlots(const struct dict *d);         /* bucket 槽位总数 */
+int  dictRehashMilliseconds(struct dict *d, int ms);   /* cron 用：预算内推进 rehash */
 
 hash_t dictEntryGetHash(const dictEntry *de);
 
