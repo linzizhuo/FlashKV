@@ -58,16 +58,21 @@ FlashKV 采用**分层设计**，自底向上共 4 层：
 
 - **p=0.25** 概率分层（与 Redis 一致），层数期望值低，内存更紧凑
 - **span 跨度**机制：插入/删除时 O(log N) 维护 span，`ZRANK` 直接在搜索路径上累加跨度即可得到排名，零额外成本
-- **头节点 64 层**（宏 `ZSKIPLIST_MAXLEVEL`），避免动态高度调整
+- **头节点 32 层**（宏 `ZSKIPLIST_MAXLEVEL`，与 Redis 一致），避免动态高度调整
 
 ### 2️⃣ 哈希表 (dict) — 双表渐进式 rehash
 
 - **渐进式 rehash**：扩容时不阻塞服务，将搬迁开销均摊到每次操作上
-- **两步策略**：
+- **三步策略**：
   - `dictRehashStep` — 搬指定槽位数（含空桶），适合批量预加载
   - `dictRehashData` — 搬指定**非空桶**数，跳过空桶，保证每次调用都有实质进度
+  - `dictRehashMilliseconds` — 毫秒级时间预算内反复 `dictRehashData`，供 cron 在**无请求时**驱动
 - **空桶跳过收益**：减少 46.7% 无效搬迁调用，rehash 在 `used` 次操作内必定完成（而非 `size` 次）
 - 在使用过程中，dictRehashData相比于dictRehashStep性能波动更平缓，且可以更快完成rehash
+- **cron 驱动，不再停滞**：主表 rehash 此前只挂在数据操作路径上，客户端一静默就停在原地 →
+  `ht[0]`+`ht[1]` 长期并存（内存翻倍 + 每次查找查两张表）。现在 `databasesCron` 每 100ms
+  在轮转到的那个 DB 上调用 `dictRehashMilliseconds`（1ms 预算），与请求路径的顺带搬迁互为补充。
+  注：`expires` 表本就由 `activeExpireCycle` 的 `dictGetRandomKey` 顺带推进，无需额外处理。
 - **dictType 虚函数表**：`hash`、`keyCompare`、`free` 以及 **`valGet` 取值策略**，实现类型与容器解耦
 - **`valGet` 双策略**：
   - `dictValGetPtr` — 返回 `entry->val`（存的是指针，指向堆上对象），`dictTypeSds` 用
@@ -138,7 +143,7 @@ Dict entry → entry->val = (void*)when    ← 无 malloc，无 ValObj
 
 **TTL 过期字典**已经用了这个模式（`dictTTL` 用 `valGetRef`，时间戳直接以 `(void*)` 存入），每设置一条 TTL 就省一个 ValObj 的堆分配。
 
-而**主 dict 的值目前仍走 `ValObj`**——SET 整数时 `service.c:213` 依然 `malloc(sizeof(ValObj))`，整数存在 `ValObj->val.ll` 里。这是因为主 dict 要求统一的值读写接口，直接 inline 还需要在 `dictType` 层区分整数和字符串的取值路径，属于待做优化。
+而**主 dict 的值目前仍走 `ValObj`**——SET 整数时 `service.c:220` 依然 `malloc(sizeof(ValObj))`，整数存在 `ValObj->val.ll` 里。这是因为主 dict 要求统一的值读写接口，直接 inline 还需要在 `dictType` 层区分整数和字符串的取值路径，属于待做优化。
 
 ### 6️⃣ SDS 动态字符串
 
@@ -149,12 +154,12 @@ Dict entry → entry->val = (void*)when    ← 无 malloc，无 ValObj
 
 ### 7️⃣ TTL 过期机制
 
-- 独立 `expires` 字典，key 指针共享（零内存冗余）
+- 独立 `expires` 字典，key 为主 dict key 的独立副本（`sdsdup`），两表生命周期完全解耦，避免"key 被主表释放后 expires 悬挂"的引用计数问题；代价是每次设置 TTL 多一次 key 拷贝
 - **惰性删除**：访问时检查是否过期，过期则删除
 - **主动过期（active expire）**：SLOW/FAST 双模式定期抽样删除
-  - `ACTIVE_EXPIRE_CYCLE_SLOW` — 100ms cron 定时触发，遍历所有 DB，每次限时 1ms
-  - `ACTIVE_EXPIRE_CYCLE_FAST` — beforeSleep 触发，仅在 SLOW 超时后激活，限时更短
-- 过期字典 value 为 64 位时间戳 inline（`valGet=dictValGetRef`，`valFree=NULL`），避免堆分配，实际一次TTL只需要一次额外堆分配。
+  - `ACTIVE_EXPIRE_CYCLE_SLOW` — 100ms cron 定时触发，遍历所有 DB，每次限时 cron 间隔的 25%（默认 25ms）
+  - `ACTIVE_EXPIRE_CYCLE_FAST` — beforeSleep 触发，仅在 SLOW 超时退出后激活，限时 1ms
+- 过期字典 value 为 64 位时间戳 inline（`valGet=dictValGetRef`，`valFree=NULL`），时间戳无需 ValObj 包装，每设置一条 TTL 比包装省一次堆分配（仅剩 key 副本 + entry 的分配）
 
 ### 8️⃣ 多数据库支持
 
@@ -204,7 +209,7 @@ Dict entry → entry->val = (void*)when    ← 无 malloc，无 ValObj
 | `ZCARD key` | 1 | 返回有序集合基数 |
 | `ZRANK key member` | 2 | 0-based 排名 |
 | `ZSCORE key member` | 2 | 返回 score |
-| `ZRANGE key start stop [WITHSCORES]` | 3 | 按 rank 范围取值 |
+| `ZRANGE key start stop [BYSCORE] [WITHSCORES]` | 3-5 | 按 rank / score 范围取值，可带分数 |
 | `ZREM key member` | 2 | O(1) 删除 member |
 | `ZCOUNT key min max` | 3 | score 区间计数 |
 | `ZREMRANGEBYSCORE key min max` | 3 | score 区间范围删除 |
@@ -261,10 +266,10 @@ redis-benchmark -t set,get -n 1000000 -c 50 --csv
 src/
 ├── main.c           # 入口
 ├── server.c/.h     # epoll 事件循环 + 连接管理 + beforeSleep
-├── service.c/.h    # 命令注册 + 参数分发（25+ 命令）
+├── service.c/.h    # 命令注册 + 参数分发（26 个命令）
 ├── kvdb.c/.h       # 存储引擎封装（7 方法接口）
 ├── expire.c/.h     # 主动过期引擎（SLOW/FAST 双模式）
-├── dict.c/.h       # 哈希表核心 + 渐进式 rehash
+├── dict.c/.h       # 哈希表核心 + 渐进式 rehash（操作驱动 + cron 驱动）
 ├── dict_type.c/.h  # 虚函数表 + 类型实例
 ├── zskiplist.c/.h  # 跳表（p=0.25, span 跨度）
 ├── zset.c/.h       # ZSet 抽象层（dict + skiplist 双索引）
@@ -274,9 +279,8 @@ src/
 ├── rdb.c/.h        # RDB 持久化（序列化/反序列化 + SAVE/BGSAVE）
 ├── log.c/.h        # 日志模块
 ├── config.h        # 全局配置参数（端口、DB 数、RDB 魔数等）
-├── val_obj.h       # 值类型统一包装（STRING/LIST/ZSET/SET/HASH/INT）
+├── object.h        # 值类型统一包装 ValObj（STRING/INT/ZSET union + 多态释放）
 ├── ttl.h           # TTL 过期接口 + 时间工具
-├── object.h        # 对象类型定义
 spec/               # 模块语义规约（AI 读）
 ├── expire.md
 contract/           # 形式化契约（YAML，AI 遵守）
@@ -361,5 +365,5 @@ make test_io && ./test_io
 
 - **RDB 自动快照策略**：类似 Redis `save <seconds> <changes>`，在 cron 中检查 dirty 计数器，满足条件自动触发 BGSAVE。当前仅支持手动 SAVE/BGSAVE。
 - **主 dict 整数 inline 化**：TTL 过期字典已通过 `valGetRef` 将时间戳直接 inline 在 `entry->val` 里（零 ValObj），但主 dict 的整数值目前仍走 `malloc(sizeof(ValObj))`。
-- **entry + key 融合分配**：key 是不可变定长数据，SDS 的 `alloc`/`flags` 字段（17B header）对 key 是纯浪费。将 key 以 `[4B len][data]` 格式直接嵌入 `dictEntry` 尾部柔性数组，一次 `malloc` 搞定 entry + key，SET 路径从 3~4 次分配降到 2 次，100 万 key 省 ~13MB。expires 字典的 key 指针共享同一块内存，rehash 搬迁不受影响。
+- **entry + key 融合分配**：key 是不可变定长数据，SDS 的 `alloc`/`flags` 字段（17B header）对 key 是纯浪费。将 key 以 `[4B len][data]` 格式直接嵌入 `dictEntry` 尾部柔性数组，一次 `malloc` 搞定 entry + key，SET 路径从 3~4 次分配降到 2 次，100 万 key 省 ~13MB。（当前 expires 字典的 key 是 `sdsdup` 独立副本；此优化落地后 key 随 entry 一次分配、内存地址在 rehash 搬迁中保持稳定，届时 expires 可再考虑改为共享 key 内存。）
 ---
