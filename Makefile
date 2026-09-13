@@ -16,7 +16,6 @@ test_io: tests/test_io.c src/io.c
 # ---------- Dict + KVDB（C 实现） ----------
 
 DICT_SRC  = src/dict.c src/dict_type.c
-KVDB_SRC  = src/kvdb.c src/expire.c
 DICT_DEPS = src/dict.h src/dict_type.h src/sds.h src/object.h src/kvdb.h src/ttl.h
 
 test_dict: tests/test_dict.c $(DICT_SRC) $(SDS_SRC) src/zskiplist.c src/zset.c src/io.c $(DICT_DEPS)
@@ -60,8 +59,10 @@ test_zset: tests/test_zset.c $(ZSET_SRC) $(DICT_SRC) $(SDS_SRC) src/io.c
 
 RDB_SRC = src/rdb.c
 
-test_rdb: tests/test_rdb.c $(RDB_SRC) $(KVDB_SRC) $(DICT_SRC) $(SDS_SRC) src/zskiplist.c src/zset.c src/io.c
-	$(CC) $(CFLAGS) -I src -o $@ tests/test_rdb.c $(RDB_SRC) $(KVDB_SRC) $(DICT_SRC) $(SDS_SRC) src/zskiplist.c src/zset.c src/io.c
+# 注意：此处不能加 src/expire.c。rdb.c / test_rdb.c 均不引用主动过期引擎，而
+# expire.c 依赖全局 service 对象（定义在 service.c），链进来会报 undefined reference。
+test_rdb: tests/test_rdb.c $(RDB_SRC) src/kvdb.c $(DICT_SRC) $(SDS_SRC) src/zskiplist.c src/zset.c src/io.c
+	$(CC) $(CFLAGS) -I src -o $@ tests/test_rdb.c $(RDB_SRC) src/kvdb.c $(DICT_SRC) $(SDS_SRC) src/zskiplist.c src/zset.c src/io.c
 
 # ---------- 全部 ----------
 
